@@ -4,6 +4,7 @@ REGISTRY_URL  ?= https://github.com/ny4rl4th0t3p/chain-registry
 CONCURRENCY   ?= 250
 TIMEOUT       ?= 30s
 CHAINS        ?= cosmoshub,osmosis,juno
+VERBOSE       ?= false
 
 # v1.2.3 on a tag, v1.2.3-4-gabcdef between tags, gabcdef with no tags
 VERSION   := $(shell git describe --tags --dirty --always 2>/dev/null || echo "dev")
@@ -37,6 +38,7 @@ integration: integration-clean integration-build
 	docker run --rm \
 		-e INPUT_CONCURRENCY=$(CONCURRENCY) \
 		-e INPUT_TIMEOUT=$(TIMEOUT) \
+		-e INPUT_VERBOSE=$(VERBOSE) \
 		$(IMAGE)-integration --chains $(CHAINS) || true
 
 .PHONY: lint

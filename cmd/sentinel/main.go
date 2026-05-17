@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -24,6 +25,7 @@ type CLI struct {
 	Chains      string           `help:"Comma-separated chain names, or 'all'" env:"INPUT_CHAINS" default:"all"`
 	Timeout     time.Duration    `help:"HTTP timeout per request" env:"INPUT_TIMEOUT" default:"30s"`
 	Concurrency int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"250"`
+	Verbose     bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
 	Version     kong.VersionFlag `name:"version" help:"Print version and exit"`
 }
 
@@ -84,6 +86,25 @@ const (
 	TypeEVM
 	TypeWSS
 )
+
+func (t EndpointType) String() string {
+	switch t {
+	case TypeRPC:
+		return "rpc"
+	case TypeREST:
+		return "rest"
+	case TypeGRPCWeb:
+		return "grpc-web"
+	case TypeGRPC:
+		return "grpc"
+	case TypeEVM:
+		return "evm"
+	case TypeWSS:
+		return "wss"
+	default:
+		return "unknown"
+	}
+}
 
 type job struct {
 	chain        registry.Chain
@@ -178,6 +199,7 @@ func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurre
 		go func() {
 			defer wg.Done()
 			for j := range jobCh {
+				slog.Debug("probing", "chain", j.chain.Name, "endpoint", j.endpoint.Address, "type", j.endpointType)
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				for _, r := range runProbe(ctx, client, j) {
 					if !r.Skipped {
@@ -197,7 +219,7 @@ func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurre
 	return resultCh
 }
 
-func collectResults(resultCh <-chan checks.Result) (perChain map[string]*chainStats, keys []string) {
+func collectResults(resultCh <-chan checks.Result, verbose bool) (perChain map[string]*chainStats, keys []string) {
 	perChain = map[string]*chainStats{}
 
 	for r := range resultCh {
@@ -243,7 +265,9 @@ func collectResults(resultCh <-chan checks.Result) (perChain map[string]*chainSt
 		label := r.Chain + "/" + r.ChainID
 		switch {
 		case r.Passed:
-			fmt.Printf("PASS  %-35s  %-14s  %s\n", label, r.Check, r.Endpoint)
+			if verbose {
+				fmt.Printf("PASS  %-35s  %-14s  %s\n", label, r.Check, r.Endpoint)
+			}
 		case r.ConnFailed:
 			fmt.Printf("ERR   %-35s  %-14s  %s  %s\n", label, r.Check, r.Endpoint, r.Evidence)
 		default:
@@ -320,6 +344,12 @@ func main() {
 		kong.Vars{"version": Version},
 	)
 
+	logLevel := slog.LevelWarn
+	if cli.Verbose {
+		logLevel = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+
 	var filter []string
 	if cli.Chains != "all" {
 		for _, c := range strings.Split(cli.Chains, ",") {
@@ -331,13 +361,14 @@ func main() {
 
 	chains, err := registry.LoadChains(cli.Registry, filter)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		slog.Error("failed to load chains", "err", err)
 		os.Exit(1)
 	}
 	if len(chains) == 0 {
-		fmt.Fprintln(os.Stderr, "error: no chains found")
+		slog.Error("no chains found in registry")
 		os.Exit(1)
 	}
+	slog.Debug("chains loaded", "count", len(chains))
 
 	var missingChains []string
 	if len(filter) > 0 {
@@ -354,11 +385,11 @@ func main() {
 
 	client := checks.NewHTTPClient(cli.Timeout)
 	resultCh := runWorkers(buildJobs(chains), client, cli.Timeout, cli.Concurrency)
-	perChain, keys := collectResults(resultCh)
+	perChain, keys := collectResults(resultCh, cli.Verbose)
 	totals := printSummary(perChain, keys)
 
 	for _, name := range missingChains {
-		fmt.Printf("warning: %q not found in registry (no chain.json — may be EVM-only or unlisted)\n", name)
+		slog.Warn("chain not found in registry", "chain", name, "hint", "no chain.json — may be EVM-only or unlisted")
 	}
 
 	if totals.allDead() > 0 || totals.chainIDFail > 0 {
