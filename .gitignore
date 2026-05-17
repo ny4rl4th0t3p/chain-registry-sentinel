@@ -1,0 +1,23 @@
+# Binaries
+bin/
+dist/
+*.exe
+
+# Go build artifacts
+*.test
+*.out
+
+# Config with secrets
+config.local.yaml
+.env*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
