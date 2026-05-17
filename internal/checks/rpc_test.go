@@ -130,6 +130,27 @@ func TestRPCChainID_SkippedWhenFetchFailed(t *testing.T) {
 	}
 }
 
+func TestRPCChainID_UnwrappedNodeInfo(t *testing.T) {
+	// Some nodes (e.g. Sei via Pocket Network) return node_info directly at the
+	// top level without the result wrapper.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"node_info": map[string]any{"network": "testchain-1"},
+		})
+	}))
+	defer srv.Close()
+
+	probe := probeChain(t, srv, "testchain-1")
+	r := checks.NewRPCChainID().Evaluate(probe)
+	if !r.Passed {
+		t.Errorf("want pass for unwrapped node_info format, got evidence: %s", r.Evidence)
+	}
+}
+
 // ProbeEndpoint
 
 func TestProbeEndpoint_SingleFetch(t *testing.T) {

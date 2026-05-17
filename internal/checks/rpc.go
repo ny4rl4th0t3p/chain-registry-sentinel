@@ -17,6 +17,11 @@ type rpcStatus struct {
 			Network string `json:"network"`
 		} `json:"node_info"`
 	} `json:"result"`
+	// Some nodes (e.g. Sei via Pocket Network) omit the result wrapper and
+	// return node_info directly at the top level.
+	DirectNodeInfo struct {
+		Network string `json:"network"`
+	} `json:"node_info"`
 }
 
 func NewHTTPClient(timeout time.Duration) *http.Client {
@@ -88,6 +93,9 @@ func (c *RPCChainID) Evaluate(probe EndpointProbe) Result {
 		return r
 	}
 	got := probe.Status.Result.NodeInfo.Network
+	if got == "" {
+		got = probe.Status.DirectNodeInfo.Network
+	}
 	if got == probe.Chain.ChainID {
 		r.Passed = true
 	} else {
