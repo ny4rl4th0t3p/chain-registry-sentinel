@@ -74,8 +74,8 @@ func ProbeEVMEndpoint(ctx context.Context, client *http.Client, chain registry.C
 
 type EVMLiveness struct{}
 
-func NewEVMLiveness() *EVMLiveness  { return &EVMLiveness{} }
-func (c *EVMLiveness) Name() string { return "evm_liveness" }
+func NewEVMLiveness() *EVMLiveness { return &EVMLiveness{} }
+func (*EVMLiveness) Name() string  { return "evm_liveness" }
 
 func (c *EVMLiveness) Evaluate(probe EVMProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
@@ -90,8 +90,8 @@ func (c *EVMLiveness) Evaluate(probe EVMProbe) Result {
 
 type EVMChainID struct{}
 
-func NewEVMChainID() *EVMChainID   { return &EVMChainID{} }
-func (c *EVMChainID) Name() string { return "evm_chain_id" }
+func NewEVMChainID() *EVMChainID { return &EVMChainID{} }
+func (*EVMChainID) Name() string { return "evm_chain_id" }
 
 func (c *EVMChainID) Evaluate(probe EVMProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}

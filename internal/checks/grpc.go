@@ -85,6 +85,7 @@ func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.En
 			switch st.Code() {
 			case codes.Unavailable, codes.DeadlineExceeded:
 				probe.NetErr = true
+			default:
 			}
 		}
 		return probe
@@ -182,7 +183,7 @@ func decodeDefaultNodeInfoNetwork(data []byte) (string, error) {
 type GRPCLiveness struct{}
 
 func NewGRPCLiveness() *GRPCLiveness { return &GRPCLiveness{} }
-func (c *GRPCLiveness) Name() string { return "grpc_liveness" }
+func (*GRPCLiveness) Name() string   { return "grpc_liveness" }
 
 func (c *GRPCLiveness) Evaluate(probe GRPCProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
@@ -197,8 +198,8 @@ func (c *GRPCLiveness) Evaluate(probe GRPCProbe) Result {
 
 type GRPCChainID struct{}
 
-func NewGRPCChainID() *GRPCChainID  { return &GRPCChainID{} }
-func (c *GRPCChainID) Name() string { return "grpc_chain_id" }
+func NewGRPCChainID() *GRPCChainID { return &GRPCChainID{} }
+func (*GRPCChainID) Name() string  { return "grpc_chain_id" }
 
 func (c *GRPCChainID) Evaluate(probe GRPCProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}

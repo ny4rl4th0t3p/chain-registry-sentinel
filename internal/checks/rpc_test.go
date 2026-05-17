@@ -18,30 +18,32 @@ func rpcStatusHandler(network string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"result": map[string]any{
 				"node_info": map[string]any{"network": network},
 			},
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
-func probeChain(t *testing.T, srv *httptest.Server, chainID string) checks.EndpointProbe {
+func probeChain(t *testing.T, srv *httptest.Server) checks.EndpointProbe {
 	t.Helper()
 	chain := registry.Chain{
 		Name:    "testchain",
-		ChainID: chainID,
+		ChainID: "testchain-1",
 		RPCs:    []registry.Endpoint{{Address: srv.URL, Provider: "test"}},
 	}
 	client := checks.NewHTTPClient(5 * time.Second)
 	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
 }
 
-func probeDeadServer(t *testing.T, chainID string) checks.EndpointProbe {
+func probeDeadServer(t *testing.T) checks.EndpointProbe {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	srv.Close()
-	chain := registry.Chain{Name: "testchain", ChainID: chainID, RPCs: []registry.Endpoint{{Address: srv.URL}}}
+	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", RPCs: []registry.Endpoint{{Address: srv.URL}}}
 	client := checks.NewHTTPClient(2 * time.Second)
 	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
 }
@@ -52,7 +54,7 @@ func TestRPCLiveness_Pass(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("testchain-1"))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	r := checks.NewRPCLiveness().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -60,12 +62,12 @@ func TestRPCLiveness_Pass(t *testing.T) {
 }
 
 func TestRPCLiveness_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	r := checks.NewRPCLiveness().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for non-200 response")
@@ -79,7 +81,7 @@ func TestRPCLiveness_NonOKStatus(t *testing.T) {
 }
 
 func TestRPCLiveness_ConnectionRefused(t *testing.T) {
-	probe := probeDeadServer(t, "testchain-1")
+	probe := probeDeadServer(t)
 	r := checks.NewRPCLiveness().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for connection refused")
@@ -98,7 +100,7 @@ func TestRPCChainID_Match(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("testchain-1"))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	r := checks.NewRPCChainID().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -109,7 +111,7 @@ func TestRPCChainID_Mismatch(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("wrongchain-99"))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	r := checks.NewRPCChainID().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for chain ID mismatch")
@@ -120,7 +122,7 @@ func TestRPCChainID_Mismatch(t *testing.T) {
 }
 
 func TestRPCChainID_SkippedWhenFetchFailed(t *testing.T) {
-	probe := probeDeadServer(t, "testchain-1")
+	probe := probeDeadServer(t)
 	r := checks.NewRPCChainID().Evaluate(probe)
 	if !r.Skipped {
 		t.Error("want skipped when endpoint unreachable")
@@ -138,13 +140,15 @@ func TestRPCChainID_UnwrappedNodeInfo(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"node_info": map[string]any{"network": "testchain-1"},
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	r := checks.NewRPCChainID().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass for unwrapped node_info format, got evidence: %s", r.Evidence)
@@ -161,7 +165,7 @@ func TestProbeEndpoint_SingleFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	probe := probeChain(t, srv, "testchain-1")
+	probe := probeChain(t, srv)
 	checks.NewRPCLiveness().Evaluate(probe)
 	checks.NewRPCChainID().Evaluate(probe)
 

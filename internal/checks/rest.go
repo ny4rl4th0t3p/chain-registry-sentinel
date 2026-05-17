@@ -2,7 +2,6 @@ package checks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,33 +25,14 @@ type RESTProbe struct {
 
 func ProbeRESTEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) RESTProbe {
 	probe := RESTProbe{Chain: chain, Endpoint: ep}
-
 	url := strings.TrimRight(ep.Address, "/") + "/cosmos/base/tendermint/v1beta1/node_info"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		probe.FetchErr = err
-		return probe
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		probe.FetchErr = err
-		probe.NetErr = true
-		return probe
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		probe.FetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
-		return probe
-	}
-
 	var info restNodeInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		probe.FetchErr = fmt.Errorf("decode: %w", err)
+	fetchErr, netErr := httpGetJSON(ctx, client, url, &info)
+	if fetchErr != nil {
+		probe.FetchErr = fetchErr
+		probe.NetErr = netErr
 		return probe
 	}
-
 	probe.NodeInfo = &info
 	return probe
 }
@@ -60,7 +40,7 @@ func ProbeRESTEndpoint(ctx context.Context, client *http.Client, chain registry.
 type RESTLiveness struct{}
 
 func NewRESTLiveness() *RESTLiveness { return &RESTLiveness{} }
-func (c *RESTLiveness) Name() string { return "rest_liveness" }
+func (*RESTLiveness) Name() string   { return "rest_liveness" }
 
 func (c *RESTLiveness) Evaluate(probe RESTProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
@@ -75,8 +55,8 @@ func (c *RESTLiveness) Evaluate(probe RESTProbe) Result {
 
 type RESTChainID struct{}
 
-func NewRESTChainID() *RESTChainID  { return &RESTChainID{} }
-func (c *RESTChainID) Name() string { return "rest_chain_id" }
+func NewRESTChainID() *RESTChainID { return &RESTChainID{} }
+func (*RESTChainID) Name() string  { return "rest_chain_id" }
 
 func (c *RESTChainID) Evaluate(probe RESTProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}

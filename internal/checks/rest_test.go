@@ -18,28 +18,30 @@ func restNodeInfoHandler(network string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"default_node_info": map[string]any{"network": network},
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
-func probeREST(t *testing.T, srv *httptest.Server, chainID string) checks.RESTProbe {
+func probeREST(t *testing.T, srv *httptest.Server) checks.RESTProbe {
 	t.Helper()
 	chain := registry.Chain{
 		Name:          "testchain",
-		ChainID:       chainID,
+		ChainID:       "testchain-1",
 		RESTEndpoints: []registry.Endpoint{{Address: srv.URL, Provider: "test"}},
 	}
 	client := checks.NewHTTPClient(5 * time.Second)
 	return checks.ProbeRESTEndpoint(context.Background(), client, chain, chain.RESTEndpoints[0])
 }
 
-func probeDeadREST(t *testing.T, chainID string) checks.RESTProbe {
+func probeDeadREST(t *testing.T) checks.RESTProbe {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	srv.Close()
-	chain := registry.Chain{Name: "testchain", ChainID: chainID, RESTEndpoints: []registry.Endpoint{{Address: srv.URL}}}
+	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", RESTEndpoints: []registry.Endpoint{{Address: srv.URL}}}
 	client := checks.NewHTTPClient(2 * time.Second)
 	return checks.ProbeRESTEndpoint(context.Background(), client, chain, chain.RESTEndpoints[0])
 }
@@ -48,7 +50,7 @@ func TestRESTLiveness_Pass(t *testing.T) {
 	srv := httptest.NewServer(restNodeInfoHandler("testchain-1"))
 	defer srv.Close()
 
-	probe := probeREST(t, srv, "testchain-1")
+	probe := probeREST(t, srv)
 	r := checks.NewRESTLiveness().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -56,12 +58,12 @@ func TestRESTLiveness_Pass(t *testing.T) {
 }
 
 func TestRESTLiveness_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
 
-	probe := probeREST(t, srv, "testchain-1")
+	probe := probeREST(t, srv)
 	r := checks.NewRESTLiveness().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for non-200 response")
@@ -75,7 +77,7 @@ func TestRESTLiveness_NonOKStatus(t *testing.T) {
 }
 
 func TestRESTLiveness_ConnectionRefused(t *testing.T) {
-	probe := probeDeadREST(t, "testchain-1")
+	probe := probeDeadREST(t)
 	r := checks.NewRESTLiveness().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for connection refused")
@@ -92,7 +94,7 @@ func TestRESTChainID_Match(t *testing.T) {
 	srv := httptest.NewServer(restNodeInfoHandler("testchain-1"))
 	defer srv.Close()
 
-	probe := probeREST(t, srv, "testchain-1")
+	probe := probeREST(t, srv)
 	r := checks.NewRESTChainID().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -103,7 +105,7 @@ func TestRESTChainID_Mismatch(t *testing.T) {
 	srv := httptest.NewServer(restNodeInfoHandler("wrongchain-99"))
 	defer srv.Close()
 
-	probe := probeREST(t, srv, "testchain-1")
+	probe := probeREST(t, srv)
 	r := checks.NewRESTChainID().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for chain ID mismatch")
@@ -114,7 +116,7 @@ func TestRESTChainID_Mismatch(t *testing.T) {
 }
 
 func TestRESTChainID_SkippedWhenFetchFailed(t *testing.T) {
-	probe := probeDeadREST(t, "testchain-1")
+	probe := probeDeadREST(t)
 	r := checks.NewRESTChainID().Evaluate(probe)
 	if !r.Skipped {
 		t.Error("want skipped when endpoint unreachable")
@@ -132,7 +134,7 @@ func TestProbeRESTEndpoint_SingleFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	probe := probeREST(t, srv, "testchain-1")
+	probe := probeREST(t, srv)
 	checks.NewRESTLiveness().Evaluate(probe)
 	checks.NewRESTChainID().Evaluate(probe)
 

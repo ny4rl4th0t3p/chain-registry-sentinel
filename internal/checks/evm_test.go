@@ -13,12 +13,14 @@ import (
 )
 
 func evmChainIDHandler(chainIDHex string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
 			"result":  chainIDHex,
-		})
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -31,7 +33,7 @@ func probeEVM(t *testing.T, srv *httptest.Server, chain registry.Chain) checks.E
 
 func probeDeadEVM(t *testing.T) checks.EVMProbe {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	srv.Close()
 	chain := registry.Chain{Name: "testchain", ChainID: "9001", ChainType: "eip155"}
 	ep := registry.Endpoint{Address: srv.URL}
@@ -52,7 +54,7 @@ func TestEVMLiveness_Pass(t *testing.T) {
 }
 
 func TestEVMLiveness_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()

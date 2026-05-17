@@ -56,13 +56,13 @@ func buildGetNodeInfoResponse(network string) []byte {
 
 // grpcNodeInfoIface is the handler type for the test service descriptor.
 type grpcNodeInfoIface interface {
-	handleGetNodeInfo(ctx context.Context, req []byte) ([]byte, error)
+	handleGetNodeInfo(ctx context.Context, req []byte) []byte
 }
 
 type testGRPCServer struct{ network string }
 
-func (s *testGRPCServer) handleGetNodeInfo(_ context.Context, _ []byte) ([]byte, error) {
-	return buildGetNodeInfoResponse(s.network), nil
+func (s *testGRPCServer) handleGetNodeInfo(_ context.Context, _ []byte) []byte {
+	return buildGetNodeInfoResponse(s.network)
 }
 
 var testServiceDesc = grpc.ServiceDesc{
@@ -75,7 +75,7 @@ var testServiceDesc = grpc.ServiceDesc{
 			if err := dec(&req); err != nil {
 				return nil, err
 			}
-			return srv.(grpcNodeInfoIface).handleGetNodeInfo(ctx, req)
+			return srv.(grpcNodeInfoIface).handleGetNodeInfo(ctx, req), nil
 		},
 	}},
 	Streams: []grpc.StreamDesc{},
@@ -83,7 +83,8 @@ var testServiceDesc = grpc.ServiceDesc{
 
 func startTestGRPCServer(t *testing.T, network string) string {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -94,11 +95,11 @@ func startTestGRPCServer(t *testing.T, network string) string {
 	return lis.Addr().String()
 }
 
-func probeGRPC(t *testing.T, addr, chainID string) checks.GRPCProbe {
+func probeGRPC(t *testing.T, addr string) checks.GRPCProbe {
 	t.Helper()
 	chain := registry.Chain{
 		Name:          "testchain",
-		ChainID:       chainID,
+		ChainID:       "testchain-1",
 		GRPCEndpoints: []registry.Endpoint{{Address: addr, Provider: "test"}},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -106,23 +107,24 @@ func probeGRPC(t *testing.T, addr, chainID string) checks.GRPCProbe {
 	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
 }
 
-func probeDeadGRPC(t *testing.T, chainID string) checks.GRPCProbe {
+func probeDeadGRPC(t *testing.T) checks.GRPCProbe {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var lc net.ListenConfig
+	lis, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := lis.Addr().String()
 	lis.Close()
-	chain := registry.Chain{Name: "testchain", ChainID: chainID, GRPCEndpoints: []registry.Endpoint{{Address: addr}}}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", GRPCEndpoints: []registry.Endpoint{{Address: addr}}}
 	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
 }
 
 func TestGRPCLiveness_Pass(t *testing.T) {
 	addr := startTestGRPCServer(t, "testchain-1")
-	probe := probeGRPC(t, addr, "testchain-1")
+	probe := probeGRPC(t, addr)
 	r := checks.NewGRPCLiveness().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -130,7 +132,7 @@ func TestGRPCLiveness_Pass(t *testing.T) {
 }
 
 func TestGRPCLiveness_ConnectionRefused(t *testing.T) {
-	probe := probeDeadGRPC(t, "testchain-1")
+	probe := probeDeadGRPC(t)
 	r := checks.NewGRPCLiveness().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for connection refused")
@@ -145,7 +147,7 @@ func TestGRPCLiveness_ConnectionRefused(t *testing.T) {
 
 func TestGRPCChainID_Match(t *testing.T) {
 	addr := startTestGRPCServer(t, "testchain-1")
-	probe := probeGRPC(t, addr, "testchain-1")
+	probe := probeGRPC(t, addr)
 	r := checks.NewGRPCChainID().Evaluate(probe)
 	if !r.Passed {
 		t.Errorf("want pass, got evidence: %s", r.Evidence)
@@ -154,7 +156,7 @@ func TestGRPCChainID_Match(t *testing.T) {
 
 func TestGRPCChainID_Mismatch(t *testing.T) {
 	addr := startTestGRPCServer(t, "wrongchain-99")
-	probe := probeGRPC(t, addr, "testchain-1")
+	probe := probeGRPC(t, addr)
 	r := checks.NewGRPCChainID().Evaluate(probe)
 	if r.Passed {
 		t.Error("want fail for chain ID mismatch")
@@ -165,7 +167,7 @@ func TestGRPCChainID_Mismatch(t *testing.T) {
 }
 
 func TestGRPCChainID_SkippedWhenFetchFailed(t *testing.T) {
-	probe := probeDeadGRPC(t, "testchain-1")
+	probe := probeDeadGRPC(t)
 	r := checks.NewGRPCChainID().Evaluate(probe)
 	if !r.Skipped {
 		t.Error("want skipped when endpoint unreachable")
@@ -177,7 +179,8 @@ func TestGRPCChainID_SkippedWhenFetchFailed(t *testing.T) {
 
 func TestProbeGRPCEndpoint_SingleFetch(t *testing.T) {
 	calls := 0
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -188,7 +191,7 @@ func TestProbeGRPCEndpoint_SingleFetch(t *testing.T) {
 	go srv.Serve(lis)
 	t.Cleanup(srv.GracefulStop)
 
-	probe := probeGRPC(t, lis.Addr().String(), "testchain-1")
+	probe := probeGRPC(t, lis.Addr().String())
 	checks.NewGRPCLiveness().Evaluate(probe)
 	checks.NewGRPCChainID().Evaluate(probe)
 
@@ -202,7 +205,7 @@ type countingGRPCServer struct {
 	calls   *int
 }
 
-func (s *countingGRPCServer) handleGetNodeInfo(_ context.Context, _ []byte) ([]byte, error) {
+func (s *countingGRPCServer) handleGetNodeInfo(_ context.Context, _ []byte) []byte {
 	*s.calls++
-	return buildGetNodeInfoResponse(s.network), nil
+	return buildGetNodeInfoResponse(s.network)
 }

@@ -85,7 +85,7 @@ func ProbeGRPCWebEndpoint(ctx context.Context, client *http.Client, chain regist
 type GRPCWebLiveness struct{}
 
 func NewGRPCWebLiveness() *GRPCWebLiveness { return &GRPCWebLiveness{} }
-func (c *GRPCWebLiveness) Name() string    { return "grpc_web_liveness" }
+func (*GRPCWebLiveness) Name() string      { return "grpc_web_liveness" }
 
 func (c *GRPCWebLiveness) Evaluate(probe GRPCWebProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
@@ -101,7 +101,7 @@ func (c *GRPCWebLiveness) Evaluate(probe GRPCWebProbe) Result {
 type GRPCWebChainID struct{}
 
 func NewGRPCWebChainID() *GRPCWebChainID { return &GRPCWebChainID{} }
-func (c *GRPCWebChainID) Name() string   { return "grpc_web_chain_id" }
+func (*GRPCWebChainID) Name() string     { return "grpc_web_chain_id" }
 
 func (c *GRPCWebChainID) Evaluate(probe GRPCWebProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}

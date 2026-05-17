@@ -35,6 +35,9 @@ func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.End
 
 	dialer := websocket.Dialer{HandshakeTimeout: timeout}
 	conn, resp, err := dialer.DialContext(ctx, ep.Address, nil)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		probe.FetchErr = err
 		probe.NetErr = resp == nil // no HTTP response at all = transport failure
@@ -43,8 +46,14 @@ func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.End
 	defer conn.Close()
 
 	if deadline, ok := ctx.Deadline(); ok {
-		conn.SetReadDeadline(deadline)
-		conn.SetWriteDeadline(deadline)
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			probe.FetchErr = fmt.Errorf("set deadline: %w", err)
+			return probe
+		}
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			probe.FetchErr = fmt.Errorf("set deadline: %w", err)
+			return probe
+		}
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(wssStatusRequest)); err != nil {
@@ -86,8 +95,8 @@ func parseWSSStatusNetwork(data []byte) (string, error) {
 
 type WSSLiveness struct{}
 
-func NewWSSLiveness() *WSSLiveness  { return &WSSLiveness{} }
-func (c *WSSLiveness) Name() string { return "wss_liveness" }
+func NewWSSLiveness() *WSSLiveness { return &WSSLiveness{} }
+func (*WSSLiveness) Name() string  { return "wss_liveness" }
 
 func (c *WSSLiveness) Evaluate(probe WSSProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
@@ -102,8 +111,8 @@ func (c *WSSLiveness) Evaluate(probe WSSProbe) Result {
 
 type WSSChainID struct{}
 
-func NewWSSChainID() *WSSChainID   { return &WSSChainID{} }
-func (c *WSSChainID) Name() string { return "wss_chain_id" }
+func NewWSSChainID() *WSSChainID { return &WSSChainID{} }
+func (*WSSChainID) Name() string { return "wss_chain_id" }
 
 func (c *WSSChainID) Evaluate(probe WSSProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}

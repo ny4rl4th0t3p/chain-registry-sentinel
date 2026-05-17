@@ -34,7 +34,7 @@ func writeChainFull(t *testing.T, dir, chainName, chainID, chainType, status str
 			"evm-http-jsonrpc": evm,
 		},
 	})
-	if err := os.WriteFile(filepath.Join(chainDir, "chain.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(chainDir, "chain.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -101,8 +101,12 @@ func TestLoadChains_SkipsUnderscoreAndDotDirs(t *testing.T) {
 
 	for _, skip := range []string{"_IBC", "_non-cosmos", ".hidden"} {
 		d := filepath.Join(dir, skip)
-		os.MkdirAll(d, 0o755)
-		os.WriteFile(filepath.Join(d, "chain.json"), []byte(`{"chain_name":"x","chain_id":"x-1","chain_type":"cosmos","status":"live"}`), 0o644)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "chain.json"), []byte(`{"chain_name":"x","chain_id":"x-1","chain_type":"cosmos","status":"live"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	chains, err := registry.LoadChains(dir, nil)
@@ -116,7 +120,9 @@ func TestLoadChains_SkipsUnderscoreAndDotDirs(t *testing.T) {
 
 func TestLoadChains_SkipsDirWithNoChainJSON(t *testing.T) {
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "empty-dir"), 0o755)
+	if err := os.MkdirAll(filepath.Join(dir, "empty-dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeChainJSON(t, dir, "cosmoshub", "cosmoshub-4", nil)
 
 	chains, err := registry.LoadChains(dir, nil)
@@ -150,8 +156,12 @@ func TestLoadChains_RPCEndpoints(t *testing.T) {
 func TestLoadChains_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	chainDir := filepath.Join(dir, "badchain")
-	os.MkdirAll(chainDir, 0o755)
-	os.WriteFile(filepath.Join(chainDir, "chain.json"), []byte(`not json`), 0o644)
+	if err := os.MkdirAll(chainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "chain.json"), []byte(`not json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := registry.LoadChains(dir, nil)
 	if err == nil {
