@@ -2,6 +2,7 @@
 bin/
 dist/
 *.exe
+/sentinel
 
 # Go build artifacts
 *.test

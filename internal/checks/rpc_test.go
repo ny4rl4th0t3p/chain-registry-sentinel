@@ -26,13 +26,24 @@ func rpcStatusHandler(network string) http.HandlerFunc {
 	}
 }
 
-func chainWith(t *testing.T, address string) registry.Chain {
+func probeChain(t *testing.T, srv *httptest.Server, chainID string) checks.EndpointProbe {
 	t.Helper()
-	return registry.Chain{
+	chain := registry.Chain{
 		Name:    "testchain",
-		ChainID: "testchain-1",
-		RPCs:    []registry.Endpoint{{Address: address, Provider: "test"}},
+		ChainID: chainID,
+		RPCs:    []registry.Endpoint{{Address: srv.URL, Provider: "test"}},
 	}
+	client := checks.NewHTTPClient(5 * time.Second)
+	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
+}
+
+func probeDeadServer(t *testing.T, chainID string) checks.EndpointProbe {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+	chain := registry.Chain{Name: "testchain", ChainID: chainID, RPCs: []registry.Endpoint{{Address: srv.URL}}}
+	client := checks.NewHTTPClient(2 * time.Second)
+	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
 }
 
 // RPCLiveness
@@ -41,12 +52,10 @@ func TestRPCLiveness_Pass(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("testchain-1"))
 	defer srv.Close()
 
-	results := checks.NewRPCLiveness(5*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if len(results) != 1 {
-		t.Fatalf("want 1 result, got %d", len(results))
-	}
-	if !results[0].Passed {
-		t.Errorf("want pass, got evidence: %s", results[0].Evidence)
+	probe := probeChain(t, srv, "testchain-1")
+	r := checks.NewRPCLiveness().Evaluate(probe)
+	if !r.Passed {
+		t.Errorf("want pass, got evidence: %s", r.Evidence)
 	}
 }
 
@@ -56,50 +65,30 @@ func TestRPCLiveness_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	results := checks.NewRPCLiveness(5*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if results[0].Passed {
+	probe := probeChain(t, srv, "testchain-1")
+	r := checks.NewRPCLiveness().Evaluate(probe)
+	if r.Passed {
 		t.Error("want fail for non-200 response")
+	}
+	if r.ConnFailed {
+		t.Error("HTTP error is not a connection failure")
+	}
+	if r.Skipped {
+		t.Error("liveness should never be skipped")
 	}
 }
 
 func TestRPCLiveness_ConnectionRefused(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // close immediately so the port is unreachable
-
-	results := checks.NewRPCLiveness(2*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if results[0].Passed {
+	probe := probeDeadServer(t, "testchain-1")
+	r := checks.NewRPCLiveness().Evaluate(probe)
+	if r.Passed {
 		t.Error("want fail for connection refused")
 	}
-	if results[0].Evidence == "" {
+	if !r.ConnFailed {
+		t.Error("want ConnFailed=true for unreachable endpoint")
+	}
+	if r.Evidence == "" {
 		t.Error("want non-empty evidence")
-	}
-}
-
-func TestRPCLiveness_MultipleEndpoints(t *testing.T) {
-	good := httptest.NewServer(rpcStatusHandler("testchain-1"))
-	defer good.Close()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer bad.Close()
-
-	chain := registry.Chain{
-		Name:    "testchain",
-		ChainID: "testchain-1",
-		RPCs: []registry.Endpoint{
-			{Address: good.URL},
-			{Address: bad.URL},
-		},
-	}
-	results := checks.NewRPCLiveness(5*time.Second).Run(context.Background(), chain)
-	if len(results) != 2 {
-		t.Fatalf("want 2 results, got %d", len(results))
-	}
-	if !results[0].Passed {
-		t.Error("first endpoint should pass")
-	}
-	if results[1].Passed {
-		t.Error("second endpoint should fail")
 	}
 }
 
@@ -109,9 +98,10 @@ func TestRPCChainID_Match(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("testchain-1"))
 	defer srv.Close()
 
-	results := checks.NewRPCChainID(5*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if !results[0].Passed {
-		t.Errorf("want pass, got evidence: %s", results[0].Evidence)
+	probe := probeChain(t, srv, "testchain-1")
+	r := checks.NewRPCChainID().Evaluate(probe)
+	if !r.Passed {
+		t.Errorf("want pass, got evidence: %s", r.Evidence)
 	}
 }
 
@@ -119,32 +109,42 @@ func TestRPCChainID_Mismatch(t *testing.T) {
 	srv := httptest.NewServer(rpcStatusHandler("wrongchain-99"))
 	defer srv.Close()
 
-	results := checks.NewRPCChainID(5*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if results[0].Passed {
+	probe := probeChain(t, srv, "testchain-1")
+	r := checks.NewRPCChainID().Evaluate(probe)
+	if r.Passed {
 		t.Error("want fail for chain ID mismatch")
 	}
-	if results[0].Evidence != "got=wrongchain-99 want=testchain-1" {
-		t.Errorf("unexpected evidence: %s", results[0].Evidence)
+	if r.Evidence != "got=wrongchain-99 want=testchain-1" {
+		t.Errorf("unexpected evidence: %s", r.Evidence)
 	}
 }
 
-func TestRPCChainID_FetchFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	results := checks.NewRPCChainID(2*time.Second).Run(context.Background(), chainWith(t, srv.URL))
-	if results[0].Passed {
-		t.Error("want fail when fetch fails")
+func TestRPCChainID_SkippedWhenFetchFailed(t *testing.T) {
+	probe := probeDeadServer(t, "testchain-1")
+	r := checks.NewRPCChainID().Evaluate(probe)
+	if !r.Skipped {
+		t.Error("want skipped when endpoint unreachable")
 	}
-	if results[0].Evidence == "" {
-		t.Error("want non-empty evidence")
+	if r.Passed {
+		t.Error("skipped result should not be passed")
 	}
 }
 
-func TestRPCChainID_NoEndpoints(t *testing.T) {
-	chain := registry.Chain{Name: "empty", ChainID: "empty-1", RPCs: nil}
-	results := checks.NewRPCChainID(5*time.Second).Run(context.Background(), chain)
-	if len(results) != 0 {
-		t.Errorf("want 0 results for chain with no RPCs, got %d", len(results))
+// ProbeEndpoint
+
+func TestProbeEndpoint_SingleFetch(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		rpcStatusHandler("testchain-1")(w, r)
+	}))
+	defer srv.Close()
+
+	probe := probeChain(t, srv, "testchain-1")
+	checks.NewRPCLiveness().Evaluate(probe)
+	checks.NewRPCChainID().Evaluate(probe)
+
+	if calls != 1 {
+		t.Errorf("want exactly 1 HTTP call, got %d", calls)
 	}
 }

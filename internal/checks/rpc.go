@@ -11,7 +11,7 @@ import (
 	"chain-registry-sentinel/internal/registry"
 )
 
-type rpcStatusResponse struct {
+type rpcStatus struct {
 	Result struct {
 		NodeInfo struct {
 			Network string `json:"network"`
@@ -19,100 +19,79 @@ type rpcStatusResponse struct {
 	} `json:"result"`
 }
 
-func newHTTPClient(timeout time.Duration) *http.Client {
+func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-// fetchStatus performs GET {address}/status and returns the parsed response.
-// It normalises the address by trimming trailing slashes.
-func fetchStatus(ctx context.Context, client *http.Client, address string) (*rpcStatusResponse, int, error) {
-	url := strings.TrimRight(address, "/") + "/status"
+// ProbeEndpoint fetches /status once for an endpoint. Both checks share this result.
+func ProbeEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) EndpointProbe {
+	probe := EndpointProbe{Chain: chain, Endpoint: ep}
+
+	url := strings.TrimRight(ep.Address, "/") + "/status"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, 0, err
+		probe.FetchErr = err
+		return probe
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, err
+		probe.FetchErr = err
+		probe.NetErr = true
+		return probe
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
+		probe.FetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		return probe
 	}
 
-	var status rpcStatusResponse
+	var status rpcStatus
 	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("decode response: %w", err)
+		probe.FetchErr = fmt.Errorf("decode: %w", err)
+		return probe
 	}
-	return &status, resp.StatusCode, nil
+
+	probe.Status = &status
+	return probe
 }
 
-// RPCLiveness checks that each RPC endpoint responds to /status with HTTP 200.
-type RPCLiveness struct {
-	client *http.Client
-}
+// RPCLiveness passes when the endpoint responds to /status with HTTP 200.
+type RPCLiveness struct{}
 
-func NewRPCLiveness(timeout time.Duration) *RPCLiveness {
-	return &RPCLiveness{client: newHTTPClient(timeout)}
-}
-
+func NewRPCLiveness() *RPCLiveness  { return &RPCLiveness{} }
 func (c *RPCLiveness) Name() string { return "rpc_liveness" }
 
-func (c *RPCLiveness) Run(ctx context.Context, chain registry.Chain) []Result {
-	results := make([]Result, 0, len(chain.RPCs))
-	for _, ep := range chain.RPCs {
-		_, _, err := fetchStatus(ctx, c.client, ep.Address)
-		r := Result{
-			Chain:    chain.Name,
-			Check:    c.Name(),
-			Endpoint: ep.Address,
-			Passed:   err == nil,
-		}
-		if err != nil {
-			r.Evidence = err.Error()
-		}
-		results = append(results, r)
+func (c *RPCLiveness) Evaluate(probe EndpointProbe) Result {
+	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.FetchErr != nil {
+		r.ConnFailed = probe.NetErr
+		r.Evidence = probe.FetchErr.Error()
+		return r
 	}
-	return results
+	r.Passed = true
+	return r
 }
 
-// RPCChainID checks that the chain ID reported by /status matches chain.json.
-type RPCChainID struct {
-	client *http.Client
-}
+// RPCChainID passes when the chain ID in /status matches chain.json.
+// Skipped when the endpoint was unreachable — liveness already reported that.
+type RPCChainID struct{}
 
-func NewRPCChainID(timeout time.Duration) *RPCChainID {
-	return &RPCChainID{client: newHTTPClient(timeout)}
-}
-
+func NewRPCChainID() *RPCChainID   { return &RPCChainID{} }
 func (c *RPCChainID) Name() string { return "rpc_chain_id" }
 
-func (c *RPCChainID) Run(ctx context.Context, chain registry.Chain) []Result {
-	results := make([]Result, 0, len(chain.RPCs))
-	for _, ep := range chain.RPCs {
-		status, _, err := fetchStatus(ctx, c.client, ep.Address)
-		r := Result{
-			Chain:    chain.Name,
-			Check:    c.Name(),
-			Endpoint: ep.Address,
-		}
-		if err != nil {
-			r.Passed = false
-			r.Evidence = fmt.Sprintf("fetch failed: %s", err)
-			results = append(results, r)
-			continue
-		}
-
-		got := status.Result.NodeInfo.Network
-		if got == chain.ChainID {
-			r.Passed = true
-		} else {
-			r.Passed = false
-			r.Evidence = fmt.Sprintf("got=%s want=%s", got, chain.ChainID)
-		}
-		results = append(results, r)
+func (c *RPCChainID) Evaluate(probe EndpointProbe) Result {
+	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.FetchErr != nil {
+		r.Skipped = true
+		return r
 	}
-	return results
+	got := probe.Status.Result.NodeInfo.Network
+	if got == probe.Chain.ChainID {
+		r.Passed = true
+	} else {
+		r.Evidence = fmt.Sprintf("got=%s want=%s", got, probe.Chain.ChainID)
+	}
+	return r
 }

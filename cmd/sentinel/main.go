@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,8 +22,23 @@ type CLI struct {
 	Registry    string           `help:"Path to local chain-registry clone" env:"INPUT_REGISTRY" required:""`
 	Chains      string           `help:"Comma-separated chain names, or 'all'" env:"INPUT_CHAINS" default:"all"`
 	Timeout     time.Duration    `help:"HTTP timeout per request" env:"INPUT_TIMEOUT" default:"30s"`
-	Concurrency int              `help:"Max parallel chains" env:"INPUT_CONCURRENCY" default:"10"`
+	Concurrency int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"250"`
 	Version     kong.VersionFlag `name:"version" help:"Print version and exit"`
+}
+
+type chainStats struct {
+	endpoints   int
+	live        int
+	unreachable int // ERR: transport failure (DNS, timeout, connection refused)
+	wrongResp   int // FAIL: endpoint responded but non-200 or bad data
+	chainIDFail int
+}
+
+func (s *chainStats) dead() int { return s.unreachable + s.wrongResp }
+
+type job struct {
+	chain    registry.Chain
+	endpoint registry.Endpoint
 }
 
 func main() {
@@ -52,63 +68,131 @@ func main() {
 		os.Exit(1)
 	}
 
-	checkers := []checks.Check{
-		checks.NewRPCLiveness(cli.Timeout),
-		checks.NewRPCChainID(cli.Timeout),
-	}
-
-	type chainResults struct {
-		chain   string
-		results []checks.Result
-	}
-
-	sem := make(chan struct{}, cli.Concurrency)
-	out := make(chan chainResults, len(chains))
-	var wg sync.WaitGroup
-
-	for _, chain := range chains {
-		wg.Add(1)
-		go func(ch registry.Chain) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			ctx, cancel := context.WithTimeout(context.Background(), cli.Timeout*time.Duration(len(ch.RPCs)+1))
-			defer cancel()
-
-			var results []checks.Result
-			for _, checker := range checkers {
-				results = append(results, checker.Run(ctx, ch)...)
-			}
-			out <- chainResults{chain: ch.Name, results: results}
-		}(chain)
-	}
-
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-
-	var passed, failed, errored int
-	for cr := range out {
-		for _, r := range cr.results {
-			switch {
-			case r.Passed:
-				passed++
-				fmt.Printf("PASS  %-20s  %-14s  %s\n", r.Chain, r.Check, r.Endpoint)
-			case r.Evidence != "" && strings.HasPrefix(r.Evidence, "fetch failed:"):
-				errored++
-				fmt.Printf("ERR   %-20s  %-14s  %s  %s\n", r.Chain, r.Check, r.Endpoint, r.Evidence)
-			default:
-				failed++
-				fmt.Printf("FAIL  %-20s  %-14s  %s  %s\n", r.Chain, r.Check, r.Endpoint, r.Evidence)
+	var missingChains []string
+	if len(filter) > 0 {
+		loaded := make(map[string]bool, len(chains))
+		for _, ch := range chains {
+			loaded[ch.Name] = true
+		}
+		for _, name := range filter {
+			if !loaded[name] {
+				missingChains = append(missingChains, name)
 			}
 		}
 	}
 
-	fmt.Printf("\n%d passed, %d failed, %d errors across %d chains\n", passed, failed, errored, len(chains))
+	var jobs []job
+	for _, ch := range chains {
+		for _, ep := range ch.RPCs {
+			jobs = append(jobs, job{chain: ch, endpoint: ep})
+		}
+	}
 
-	if failed > 0 || errored > 0 {
+	client := checks.NewHTTPClient(cli.Timeout)
+	checkers := []checks.Check{
+		checks.NewRPCLiveness(),
+		checks.NewRPCChainID(),
+	}
+
+	jobCh := make(chan job, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	resultCh := make(chan checks.Result, len(jobs)*len(checkers))
+
+	var wg sync.WaitGroup
+	for range cli.Concurrency {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobCh {
+				ctx, cancel := context.WithTimeout(context.Background(), cli.Timeout)
+				probe := checks.ProbeEndpoint(ctx, client, j.chain, j.endpoint)
+				cancel()
+				for _, checker := range checkers {
+					r := checker.Evaluate(probe)
+					if !r.Skipped {
+						resultCh <- r
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	perChain := map[string]*chainStats{}
+
+	for r := range resultCh {
+		key := r.Chain + "/" + r.ChainID
+		s := perChain[key]
+		if s == nil {
+			s = &chainStats{}
+			perChain[key] = s
+		}
+
+		if r.Check == "rpc_liveness" {
+			s.endpoints++
+			switch {
+			case r.Passed:
+				s.live++
+			case r.ConnFailed:
+				s.unreachable++
+			default:
+				s.wrongResp++
+			}
+		} else if r.Check == "rpc_chain_id" && !r.Passed {
+			s.chainIDFail++
+		}
+
+		label := r.Chain + "/" + r.ChainID
+		switch {
+		case r.Passed:
+			fmt.Printf("PASS  %-35s  %-14s  %s\n", label, r.Check, r.Endpoint)
+		case r.ConnFailed:
+			fmt.Printf("ERR   %-35s  %-14s  %s  %s\n", label, r.Check, r.Endpoint, r.Evidence)
+		default:
+			fmt.Printf("FAIL  %-35s  %-14s  %s  %s\n", label, r.Check, r.Endpoint, r.Evidence)
+		}
+	}
+
+	keys := make([]string, 0, len(perChain))
+	for k := range perChain {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var totals chainStats
+	for _, s := range perChain {
+		totals.endpoints += s.endpoints
+		totals.live += s.live
+		totals.unreachable += s.unreachable
+		totals.wrongResp += s.wrongResp
+		totals.chainIDFail += s.chainIDFail
+	}
+
+	fmt.Printf("\n%-35s  %s\n", "chain/chain_id", "endpoints   live   dead   chain_id_mismatch")
+	fmt.Printf("%s\n", strings.Repeat("─", 85))
+	for _, k := range keys {
+		s := perChain[k]
+		fmt.Printf("%-35s  %-11d %-7d %-7d %d\n", k, s.endpoints, s.live, s.dead(), s.chainIDFail)
+	}
+	fmt.Printf("%s\n", strings.Repeat("─", 85))
+	fmt.Printf("%-35s  %-11d %-7d %-7d %d\n", "TOTAL", totals.endpoints, totals.live, totals.dead(), totals.chainIDFail)
+
+	fmt.Printf("\n%d endpoints: %d live, %d dead (%d unreachable, %d wrong response), %d chain ID mismatches across %d chains\n",
+		totals.endpoints, totals.live, totals.dead(), totals.unreachable, totals.wrongResp, totals.chainIDFail, len(chains))
+
+	for _, name := range missingChains {
+		fmt.Printf("warning: %q not found in registry (no chain.json — may be EVM-only or unlisted)\n", name)
+	}
+
+	if totals.dead() > 0 || totals.chainIDFail > 0 {
 		os.Exit(1)
 	}
 }
