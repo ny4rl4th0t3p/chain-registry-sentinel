@@ -38,3 +38,12 @@ integration: integration-clean integration-build
 		-e INPUT_CONCURRENCY=$(CONCURRENCY) \
 		-e INPUT_TIMEOUT=$(TIMEOUT) \
 		$(IMAGE)-integration --chains $(CHAINS) || true
+
+.PHONY: lint
+lint:
+	golangci-lint run
+
+.PHONY: lint-clean
+lint-clean:
+	golangci-lint cache clean
+	golangci-lint run
