@@ -14,16 +14,30 @@ type Endpoint struct {
 }
 
 type Chain struct {
-	Name    string
-	ChainID string
-	RPCs    []Endpoint
+	Name             string
+	ChainID          string
+	ChainType        string
+	Status           string
+	RPCs             []Endpoint
+	RESTEndpoints    []Endpoint
+	GRPCWebEndpoints []Endpoint
+	GRPCEndpoints    []Endpoint
+	EVMEndpoints     []Endpoint
+	WSSEndpoints     []Endpoint
 }
 
 type chainJSON struct {
 	ChainName string `json:"chain_name"`
 	ChainID   string `json:"chain_id"`
+	ChainType string `json:"chain_type"`
+	Status    string `json:"status"`
 	APIs      struct {
-		RPC []Endpoint `json:"rpc"`
+		RPC     []Endpoint `json:"rpc"`
+		REST    []Endpoint `json:"rest"`
+		GRPCWeb []Endpoint `json:"grpc-web"`
+		GRPC    []Endpoint `json:"grpc"`
+		EVM     []Endpoint `json:"evm-http-jsonrpc"`
+		WSS     []Endpoint `json:"wss"`
 	} `json:"apis"`
 }
 
@@ -67,10 +81,21 @@ func LoadChains(registryPath string, filter []string) ([]Chain, error) {
 			return nil, fmt.Errorf("parse %s: %w", chainFile, err)
 		}
 
+		if cj.Status != "live" {
+			continue
+		}
+
 		chains = append(chains, Chain{
-			Name:    cj.ChainName,
-			ChainID: cj.ChainID,
-			RPCs:    cj.APIs.RPC,
+			Name:             cj.ChainName,
+			ChainID:          cj.ChainID,
+			ChainType:        cj.ChainType,
+			Status:           cj.Status,
+			RPCs:             cj.APIs.RPC,
+			RESTEndpoints:    cj.APIs.REST,
+			GRPCWebEndpoints: cj.APIs.GRPCWeb,
+			GRPCEndpoints:    cj.APIs.GRPC,
+			EVMEndpoints:     cj.APIs.EVM,
+			WSSEndpoints:     cj.APIs.WSS,
 		})
 	}
 	return chains, nil
