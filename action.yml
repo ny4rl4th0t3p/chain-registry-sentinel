@@ -26,7 +26,7 @@ inputs:
   github-token:
     description: 'GitHub token with contents:write and pull-requests:write on the registry repo'
   max-new-prs:
-    description: 'Maximum new PRs to open per run (hard ceiling: 5)'
+    description: 'Maximum new PRs to open per run'
     default: '5'
   pr-cooldown-days:
     description: 'Minimum days between consecutive PRs for the same chain'

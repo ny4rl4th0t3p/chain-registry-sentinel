@@ -23,8 +23,6 @@ import (
 // Version is injected at build time via -ldflags.
 var Version = "dev"
 
-const maxPRCeiling = 5
-
 type CLI struct {
 	Registry       string           `help:"Path to local chain-registry clone" env:"INPUT_REGISTRY" required:""`
 	Chains         string           `help:"Comma-separated chain names, or 'all'" env:"INPUT_CHAINS" default:"all"`
@@ -35,7 +33,7 @@ type CLI struct {
 	DryRun         bool             `help:"Read state but do not write it or open PRs" env:"INPUT_DRY_RUN"`
 	GithubToken    string           `help:"GitHub token for opening PRs" env:"INPUT_GITHUB_TOKEN"`
 	GithubRepo     string           `help:"Target repo (owner/repo)" env:"INPUT_GITHUB_REPO"`
-	MaxNewPRs      int              `help:"Max new PRs per run (ceiling: 5)" env:"INPUT_MAX_NEW_PRS" default:"5"`
+	MaxNewPRs      int              `help:"Max new PRs per run" env:"INPUT_MAX_NEW_PRS" default:"5"`
 	PRCooldownDays int              `help:"Days between PRs per chain" env:"INPUT_PR_COOLDOWN_DAYS" default:"7"`
 	Verbose        bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
 	Version        kong.VersionFlag `name:"version" help:"Print version and exit"`
@@ -670,7 +668,7 @@ func maybeOpenPRs(
 			return
 		}
 	}
-	maxNew := min(cli.MaxNewPRs, maxPRCeiling)
+	maxNew := cli.MaxNewPRs
 	cooldown := time.Duration(cli.PRCooldownDays) * 24 * time.Hour
 	flagged := collectFlagged(stateMap, cli.MinFailures)
 	if len(flagged) == 0 {

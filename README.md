@@ -96,7 +96,7 @@ streaks are lost. Only use this when you cannot write to the repo.
 | `min-failures`     | `14`           | Consecutive failures before flagging an endpoint.                              |
 | `dry-run`          | `false`        | Read state but do not write files or open PRs.                                 |
 | `github-token`     | _(required)_   | Token with `contents: write` and `pull-requests: write`.                       |
-| `max-new-prs`      | `5`            | Maximum PRs to open per run (hard ceiling: 5).                                 |
+| `max-new-prs`      | `5`            | Maximum PRs to open per run.                                                   |
 | `pr-cooldown-days` | `7`            | Minimum days between PRs for the same chain.                                   |
 
 `GITHUB_REPOSITORY` is injected automatically by the Actions runner — no extra input needed.
