@@ -24,6 +24,7 @@ type RESTProbe struct {
 	RateLimited bool
 }
 
+//nolint:dupl // ProbeEndpoint is structurally identical but operates on different types and URL paths
 func ProbeRESTEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) RESTProbe {
 	probe := RESTProbe{Chain: chain, Endpoint: ep}
 	url := strings.TrimRight(ep.Address, "/") + "/cosmos/base/tendermint/v1beta1/node_info"

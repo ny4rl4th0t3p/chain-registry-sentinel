@@ -23,6 +23,8 @@ type rpcStatus struct {
 }
 
 // ProbeEndpoint fetches /status once for an endpoint. Both checks share this result.
+//
+//nolint:dupl // same structure as ProbeRESTEndpoint but different types and URL path
 func ProbeEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) EndpointProbe {
 	probe := EndpointProbe{Chain: chain, Endpoint: ep}
 	url := strings.TrimRight(ep.Address, "/") + "/status"
