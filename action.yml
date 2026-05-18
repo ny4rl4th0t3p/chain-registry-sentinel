@@ -1,0 +1,51 @@
+name: 'Chain Registry Sentinel'
+description: 'Verify chain-registry entries against reality and open PRs for dead endpoints'
+
+inputs:
+  registry:
+    description: 'Path to a local chain-registry clone'
+    required: true
+    default: '.'
+  chains:
+    description: "Comma-separated chain names to check, or 'all'"
+    default: 'all'
+  timeout:
+    description: 'HTTP/gRPC timeout per request (e.g. 30s, 1m)'
+    default: '30s'
+  concurrency:
+    description: 'Maximum simultaneous endpoint probes'
+    default: '250'
+  state-path:
+    description: 'Directory for per-chain state files (enables failure tracking across runs)'
+  min-failures:
+    description: 'Consecutive failures before flagging an endpoint for removal'
+    default: '14'
+  dry-run:
+    description: 'Read state but do not write files or open PRs'
+    default: 'false'
+  github-token:
+    description: 'GitHub token with contents:write and pull-requests:write on the registry repo'
+  max-new-prs:
+    description: 'Maximum new PRs to open per run (hard ceiling: 5)'
+    default: '5'
+  pr-cooldown-days:
+    description: 'Minimum days between consecutive PRs for the same chain'
+    default: '7'
+  state-branch:
+    description: 'Branch to persist state across runs (created automatically if missing). When set, the action restores state before probing and pushes it back after. state-path defaults to .sentinel-state if not set.'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    INPUT_REGISTRY: ${{ inputs.registry }}
+    INPUT_CHAINS: ${{ inputs.chains }}
+    INPUT_TIMEOUT: ${{ inputs.timeout }}
+    INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+    INPUT_STATE_PATH: ${{ inputs.state-path }}
+    INPUT_MIN_FAILURES: ${{ inputs.min-failures }}
+    INPUT_DRY_RUN: ${{ inputs.dry-run }}
+    INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+    INPUT_MAX_NEW_PRS: ${{ inputs.max-new-prs }}
+    INPUT_PR_COOLDOWN_DAYS: ${{ inputs.pr-cooldown-days }}
+    INPUT_STATE_BRANCH: ${{ inputs.state-branch }}

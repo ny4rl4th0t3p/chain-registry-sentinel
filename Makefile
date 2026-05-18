@@ -6,6 +6,10 @@ TIMEOUT       ?= 30s
 CHAINS        ?= cosmoshub,osmosis,juno
 VERBOSE       ?= false
 STATE_PATH    ?=
+MIN_FAILURES  ?= 14
+DRY_RUN       ?= false
+GITHUB_TOKEN  ?=
+GITHUB_REPO   ?=
 
 # v1.2.3 on a tag, v1.2.3-4-gabcdef between tags, gabcdef with no tags
 VERSION   := $(shell git describe --tags --dirty --always 2>/dev/null || echo "dev")
@@ -41,6 +45,10 @@ integration: integration-clean integration-build
 		-e INPUT_CONCURRENCY=$(CONCURRENCY) \
 		-e INPUT_TIMEOUT=$(TIMEOUT) \
 		-e INPUT_VERBOSE=$(VERBOSE) \
+		-e INPUT_MIN_FAILURES=$(MIN_FAILURES) \
+		-e INPUT_DRY_RUN=$(DRY_RUN) \
+		$(if $(GITHUB_TOKEN),-e INPUT_GITHUB_TOKEN=$(GITHUB_TOKEN)) \
+		$(if $(GITHUB_REPO),-e INPUT_GITHUB_REPO=$(GITHUB_REPO)) \
 		$(if $(STATE_PATH),-v $(abspath $(STATE_PATH)):/state -e INPUT_STATE_PATH=/state) \
 		$(IMAGE)-integration --chains $(CHAINS) || true
 

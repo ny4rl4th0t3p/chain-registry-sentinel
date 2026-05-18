@@ -9,6 +9,7 @@ RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o /sentinel ./
 
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates git
 COPY --from=builder /sentinel /sentinel
-ENTRYPOINT ["/sentinel"]
+COPY .docker/entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
