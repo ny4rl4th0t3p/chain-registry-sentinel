@@ -330,8 +330,9 @@ func loadStateMap(chains []registry.Chain, statePath string) map[string]state.Ch
 		cs, err := state.Load(filepath.Join(statePath, chains[i].Name+".json"))
 		if err != nil {
 			slog.Warn("could not load state", "chain", chains[i].Name, "err", err)
-			cs = state.ChainState{ChainID: chains[i].ChainID, Endpoints: make(map[string]state.EndpointState)}
+			cs = state.ChainState{Endpoints: make(map[string]state.EndpointState)}
 		}
+		cs.ChainID = chains[i].ChainID
 		stateMap[chains[i].Name] = cs
 	}
 	return stateMap
