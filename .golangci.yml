@@ -94,7 +94,7 @@ linters:
         - '10'
         - '100'
         - '1000'
-        - '0o600'   # standard file permission: owner read/write
+        - '0o644'   # standard file permission: owner read/write, others read
         - '0o700'   # standard file permission: owner rwx
       ignored-functions:
         - strings.SplitN
@@ -139,6 +139,12 @@ linters:
       - linters: [ errcheck ]
         text: "Error return value of `srv\\.Serve` is not checked"
         path: (.+)_test\.go
+
+      # G306: state files contain only public probe results (endpoint addresses, pass/fail
+      # status) — no credentials or secrets. 0o644 is intentional.
+      - linters: [ gosec ]
+        text: "G306: Expect WriteFile permissions to be 0600 or less"
+        path: internal/state/state\.go
 
       # G115: grpc_web_test encodes a frame header with an explicit bounds check
       # (bodyLen > math.MaxUint32). Gosec does not perform dataflow analysis to recognize

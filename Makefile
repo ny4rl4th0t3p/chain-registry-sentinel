@@ -5,6 +5,7 @@ CONCURRENCY   ?= 250
 TIMEOUT       ?= 30s
 CHAINS        ?= cosmoshub,osmosis,juno
 VERBOSE       ?= false
+STATE_PATH    ?=
 
 # v1.2.3 on a tag, v1.2.3-4-gabcdef between tags, gabcdef with no tags
 VERSION   := $(shell git describe --tags --dirty --always 2>/dev/null || echo "dev")
@@ -35,10 +36,12 @@ integration-clean:
 
 .PHONY: integration
 integration: integration-clean integration-build
+	$(if $(STATE_PATH),mkdir -p $(STATE_PATH))
 	docker run --rm \
 		-e INPUT_CONCURRENCY=$(CONCURRENCY) \
 		-e INPUT_TIMEOUT=$(TIMEOUT) \
 		-e INPUT_VERBOSE=$(VERBOSE) \
+		$(if $(STATE_PATH),-v $(abspath $(STATE_PATH)):/state -e INPUT_STATE_PATH=/state) \
 		$(IMAGE)-integration --chains $(CHAINS) || true
 
 .PHONY: lint

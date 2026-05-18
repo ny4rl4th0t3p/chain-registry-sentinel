@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"chain-registry-sentinel/internal/checks"
 	"chain-registry-sentinel/internal/registry"
+	"chain-registry-sentinel/internal/state"
 )
 
 // Version is injected at build time via -ldflags.
@@ -25,6 +27,9 @@ type CLI struct {
 	Chains      string           `help:"Comma-separated chain names, or 'all'" env:"INPUT_CHAINS" default:"all"`
 	Timeout     time.Duration    `help:"HTTP timeout per request" env:"INPUT_TIMEOUT" default:"30s"`
 	Concurrency int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"250"`
+	StatePath   string           `help:"Directory for per-chain state files" env:"INPUT_STATE_PATH"`
+	Threshold   int              `help:"Consecutive failures before flagging an endpoint" env:"INPUT_THRESHOLD" default:"14"`
+	DryRun      bool             `help:"Read state but do not write it" env:"INPUT_DRY_RUN"`
 	Verbose     bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
 	Version     kong.VersionFlag `name:"version" help:"Print version and exit"`
 }
@@ -103,6 +108,25 @@ func (t EndpointType) String() string {
 		return "wss"
 	default:
 		return "unknown"
+	}
+}
+
+func (t EndpointType) livenessCheckName() string {
+	switch t {
+	case TypeRPC:
+		return "rpc_liveness"
+	case TypeREST:
+		return "rest_liveness"
+	case TypeGRPCWeb:
+		return "grpc_web_liveness"
+	case TypeGRPC:
+		return "grpc_liveness"
+	case TypeEVM:
+		return "evm_liveness"
+	case TypeWSS:
+		return "wss_liveness"
+	default:
+		return ""
 	}
 }
 
@@ -219,10 +243,11 @@ func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurre
 	return resultCh
 }
 
-func collectResults(resultCh <-chan checks.Result, verbose bool) (perChain map[string]*chainStats, keys []string) {
+func collectResults(resultCh <-chan checks.Result, verbose bool) (perChain map[string]*chainStats, keys []string, results []checks.Result) {
 	perChain = map[string]*chainStats{}
 
 	for r := range resultCh {
+		results = append(results, r)
 		key := r.Chain + "/" + r.ChainID
 		s := perChain[key]
 		if s == nil {
@@ -280,7 +305,78 @@ func collectResults(resultCh <-chan checks.Result, verbose bool) (perChain map[s
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return perChain, keys
+	return perChain, keys, results
+}
+
+func buildActiveLivenessKeys(jobs []job) map[string]map[string]struct{} {
+	active := map[string]map[string]struct{}{}
+	for i := range jobs {
+		j := jobs[i]
+		checkName := j.endpointType.livenessCheckName()
+		if checkName == "" {
+			continue
+		}
+		if active[j.chain.Name] == nil {
+			active[j.chain.Name] = map[string]struct{}{}
+		}
+		active[j.chain.Name][state.EndpointKey(checkName, j.endpoint.Address)] = struct{}{}
+	}
+	return active
+}
+
+func loadStateMap(chains []registry.Chain, statePath string) map[string]state.ChainState {
+	stateMap := make(map[string]state.ChainState, len(chains))
+	for i := range chains {
+		cs, err := state.Load(filepath.Join(statePath, chains[i].Name+".json"))
+		if err != nil {
+			slog.Warn("could not load state", "chain", chains[i].Name, "err", err)
+			cs = state.ChainState{ChainID: chains[i].ChainID, Endpoints: make(map[string]state.EndpointState)}
+		}
+		stateMap[chains[i].Name] = cs
+	}
+	return stateMap
+}
+
+func updateState(
+	stateMap map[string]state.ChainState,
+	results []checks.Result,
+	activeKeys map[string]map[string]struct{},
+	threshold int,
+	now time.Time,
+) int {
+	for _, r := range results {
+		if r.Skipped || !strings.HasSuffix(r.Check, "_liveness") {
+			continue
+		}
+		cs := stateMap[r.Chain]
+		cs.Update(r, now)
+		stateMap[r.Chain] = cs
+	}
+	flagged := 0
+	for chainName, cs := range stateMap {
+		cs.Prune(activeKeys[chainName])
+		stateMap[chainName] = cs
+		for key, ep := range cs.Endpoints {
+			if ep.ConsecutiveFailures >= threshold {
+				flagged++
+				slog.Warn("endpoint flagged for action",
+					"chain", chainName,
+					"key", key,
+					"consecutive_failures", ep.ConsecutiveFailures,
+					"first_failure", ep.FirstFailureTime,
+				)
+			}
+		}
+	}
+	return flagged
+}
+
+func saveStateMap(stateMap map[string]state.ChainState, statePath string, now time.Time) {
+	for chainName, cs := range stateMap {
+		if err := state.Save(filepath.Join(statePath, chainName+".json"), cs, now); err != nil {
+			slog.Warn("could not save state", "chain", chainName, "err", err)
+		}
+	}
 }
 
 func printSummary(perChain map[string]*chainStats, keys []string) chainStats {
@@ -383,10 +479,32 @@ func main() {
 		}
 	}
 
+	jobs := buildJobs(chains)
 	client := checks.NewHTTPClient(cli.Timeout)
-	resultCh := runWorkers(buildJobs(chains), client, cli.Timeout, cli.Concurrency)
-	perChain, keys := collectResults(resultCh, cli.Verbose)
+
+	var stateMap map[string]state.ChainState
+	if cli.StatePath != "" {
+		stateMap = loadStateMap(chains, cli.StatePath)
+	}
+
+	resultCh := runWorkers(jobs, client, cli.Timeout, cli.Concurrency)
+	perChain, keys, results := collectResults(resultCh, cli.Verbose)
+
+	flagged := 0
+	if cli.StatePath != "" {
+		now := time.Now().UTC()
+		activeKeys := buildActiveLivenessKeys(jobs)
+		flagged = updateState(stateMap, results, activeKeys, cli.Threshold, now)
+		if !cli.DryRun {
+			saveStateMap(stateMap, cli.StatePath, now)
+		}
+	}
+
 	totals := printSummary(perChain, keys)
+
+	if flagged > 0 {
+		fmt.Printf("%d endpoint(s) flagged for action\n", flagged)
+	}
 
 	for _, name := range missingChains {
 		slog.Warn("chain not found in registry", "chain", name, "hint", "no chain.json — may be EVM-only or unlisted")
