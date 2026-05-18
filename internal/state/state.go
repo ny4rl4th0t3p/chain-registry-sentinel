@@ -28,10 +28,11 @@ type EndpointState struct {
 }
 
 type ChainState struct {
-	Version   int                      `json:"version"`
-	ChainID   string                   `json:"chain_id"`
-	UpdatedAt time.Time                `json:"updated_at"`
-	Endpoints map[string]EndpointState `json:"endpoints"`
+	Version        int                      `json:"version"`
+	ChainID        string                   `json:"chain_id"`
+	UpdatedAt      time.Time                `json:"updated_at"`
+	LastPROpenedAt time.Time                `json:"last_pr_opened_at,omitempty"`
+	Endpoints      map[string]EndpointState `json:"endpoints"`
 }
 
 // Load reads the state file at a path. Returns an empty ChainState when the file
