@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,18 @@ func TestGRPCLiveness_Pass(t *testing.T) {
 	}
 }
 
+func TestGRPCLiveness_RateLimited(t *testing.T) {
+	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1"}
+	probe := checks.GRPCProbe{Chain: chain, RateLimited: true, FetchErr: fmt.Errorf("HTTP 429")}
+	r := checks.NewGRPCLiveness().Evaluate(probe)
+	if !r.Skipped {
+		t.Error("want skipped for rate-limited probe")
+	}
+	if r.Passed {
+		t.Error("skipped result should not be passed")
+	}
+}
+
 func TestGRPCLiveness_ConnectionRefused(t *testing.T) {
 	probe := probeDeadGRPC(t)
 	r := checks.NewGRPCLiveness().Evaluate(probe)
@@ -163,6 +176,26 @@ func TestGRPCChainID_Mismatch(t *testing.T) {
 	}
 	if r.Evidence != "got=wrongchain-99 want=testchain-1" {
 		t.Errorf("unexpected evidence: %s", r.Evidence)
+	}
+}
+
+func TestProbeGRPCEndpoint_BareHostname(t *testing.T) {
+	// A bare hostname (no port, no scheme) used to produce "missing port in address".
+	// The fix treats it as host:443 with TLS. Connection will be refused, but the error
+	// must not be a parse failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	chain := registry.Chain{
+		Name:          "testchain",
+		ChainID:       "testchain-1",
+		GRPCEndpoints: []registry.Endpoint{{Address: "127.0.0.1"}},
+	}
+	probe := checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
+	if probe.FetchErr == nil {
+		t.Fatal("want error for unreachable endpoint")
+	}
+	if errMsg := probe.FetchErr.Error(); strings.Contains(errMsg, "missing port in address") {
+		t.Errorf("bare hostname should not produce parse error, got: %s", errMsg)
 	}
 }
 

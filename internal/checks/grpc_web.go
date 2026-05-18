@@ -15,11 +15,12 @@ import (
 const grpcWebGetNodeInfoPath = "/cosmos.base.tendermint.v1beta1.Service/GetNodeInfo"
 
 type GRPCWebProbe struct {
-	Chain    registry.Chain
-	Endpoint registry.Endpoint
-	Network  string
-	FetchErr error
-	NetErr   bool
+	Chain       registry.Chain
+	Endpoint    registry.Endpoint
+	Network     string
+	FetchErr    error
+	NetErr      bool
+	RateLimited bool
 }
 
 // ProbeGRPCWebEndpoint calls GetNodeInfo via the gRPC-web wire protocol.
@@ -53,6 +54,7 @@ func ProbeGRPCWebEndpoint(ctx context.Context, client *http.Client, chain regist
 
 	if resp.StatusCode != http.StatusOK {
 		probe.FetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+		probe.RateLimited = resp.StatusCode == http.StatusTooManyRequests
 		return probe
 	}
 
@@ -89,6 +91,10 @@ func (*GRPCWebLiveness) Name() string      { return "grpc_web_liveness" }
 
 func (c *GRPCWebLiveness) Evaluate(probe GRPCWebProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.RateLimited {
+		r.Skipped = true
+		return r
+	}
 	if probe.FetchErr != nil {
 		r.ConnFailed = probe.NetErr
 		r.Evidence = probe.FetchErr.Error()

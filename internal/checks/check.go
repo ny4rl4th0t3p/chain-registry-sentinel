@@ -14,11 +14,12 @@ type Result struct {
 }
 
 type EndpointProbe struct {
-	Chain    registry.Chain
-	Endpoint registry.Endpoint
-	Status   *rpcStatus
-	FetchErr error
-	NetErr   bool // true when FetchErr came from a transport failure, not an HTTP-level error
+	Chain       registry.Chain
+	Endpoint    registry.Endpoint
+	Status      *rpcStatus
+	FetchErr    error
+	NetErr      bool // true when FetchErr came from a transport failure, not an HTTP-level error
+	RateLimited bool // true when the server responded with HTTP 429
 }
 
 type Check interface {

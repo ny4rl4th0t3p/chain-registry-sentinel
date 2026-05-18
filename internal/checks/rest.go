@@ -16,21 +16,23 @@ type restNodeInfo struct {
 }
 
 type RESTProbe struct {
-	Chain    registry.Chain
-	Endpoint registry.Endpoint
-	NodeInfo *restNodeInfo
-	FetchErr error
-	NetErr   bool
+	Chain       registry.Chain
+	Endpoint    registry.Endpoint
+	NodeInfo    *restNodeInfo
+	FetchErr    error
+	NetErr      bool
+	RateLimited bool
 }
 
 func ProbeRESTEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) RESTProbe {
 	probe := RESTProbe{Chain: chain, Endpoint: ep}
 	url := strings.TrimRight(ep.Address, "/") + "/cosmos/base/tendermint/v1beta1/node_info"
 	var info restNodeInfo
-	fetchErr, netErr := httpGetJSON(ctx, client, url, &info)
+	statusCode, fetchErr, netErr := httpGetJSON(ctx, client, url, &info)
 	if fetchErr != nil {
 		probe.FetchErr = fetchErr
 		probe.NetErr = netErr
+		probe.RateLimited = statusCode == http.StatusTooManyRequests
 		return probe
 	}
 	probe.NodeInfo = &info
@@ -44,6 +46,10 @@ func (*RESTLiveness) Name() string   { return "rest_liveness" }
 
 func (c *RESTLiveness) Evaluate(probe RESTProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.RateLimited {
+		r.Skipped = true
+		return r
+	}
 	if probe.FetchErr != nil {
 		r.ConnFailed = probe.NetErr
 		r.Evidence = probe.FetchErr.Error()

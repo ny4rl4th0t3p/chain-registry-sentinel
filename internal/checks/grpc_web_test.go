@@ -72,6 +72,22 @@ func TestGRPCWebLiveness_Pass(t *testing.T) {
 	}
 }
 
+func TestGRPCWebLiveness_RateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	probe := probeGRPCWeb(t, srv.URL)
+	r := checks.NewGRPCWebLiveness().Evaluate(probe)
+	if !r.Skipped {
+		t.Error("want skipped for HTTP 429")
+	}
+	if r.Passed {
+		t.Error("skipped result should not be passed")
+	}
+}
+
 func TestGRPCWebLiveness_ConnectionRefused(t *testing.T) {
 	probe := probeDeadGRPCWeb(t)
 	r := checks.NewGRPCWebLiveness().Evaluate(probe)

@@ -40,11 +40,12 @@ func (rawCodec) Unmarshal(data []byte, v any) error {
 }
 
 type GRPCProbe struct {
-	Chain    registry.Chain
-	Endpoint registry.Endpoint
-	Network  string
-	FetchErr error
-	NetErr   bool
+	Chain       registry.Chain
+	Endpoint    registry.Endpoint
+	Network     string
+	FetchErr    error
+	NetErr      bool
+	RateLimited bool
 }
 
 const getNodeInfoMethod = "/cosmos.base.tendermint.v1beta1.Service/GetNodeInfo"
@@ -87,6 +88,7 @@ func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.En
 				probe.NetErr = true
 			default:
 			}
+			probe.RateLimited = strings.Contains(st.Message(), "429 (Too Many Requests)")
 		}
 		return probe
 	}
@@ -124,7 +126,8 @@ func parseGRPCTarget(address string) (target string, useTLS bool, err error) {
 	}
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return "", false, fmt.Errorf("parse %q: %w", address, err)
+		// Bare hostname with no port — assume port 443 (TLS convention for gRPC in chain-registry).
+		return net.JoinHostPort(address, "443"), true, nil
 	}
 	return address, port == "443", nil
 }
@@ -187,6 +190,10 @@ func (*GRPCLiveness) Name() string   { return "grpc_liveness" }
 
 func (c *GRPCLiveness) Evaluate(probe GRPCProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.RateLimited {
+		r.Skipped = true
+		return r
+	}
 	if probe.FetchErr != nil {
 		r.ConnFailed = probe.NetErr
 		r.Evidence = probe.FetchErr.Error()

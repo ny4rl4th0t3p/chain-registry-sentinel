@@ -27,10 +27,11 @@ func ProbeEndpoint(ctx context.Context, client *http.Client, chain registry.Chai
 	probe := EndpointProbe{Chain: chain, Endpoint: ep}
 	url := strings.TrimRight(ep.Address, "/") + "/status"
 	var status rpcStatus
-	fetchErr, netErr := httpGetJSON(ctx, client, url, &status)
+	statusCode, fetchErr, netErr := httpGetJSON(ctx, client, url, &status)
 	if fetchErr != nil {
 		probe.FetchErr = fetchErr
 		probe.NetErr = netErr
+		probe.RateLimited = statusCode == http.StatusTooManyRequests
 		return probe
 	}
 	probe.Status = &status
@@ -45,6 +46,10 @@ func (*RPCLiveness) Name() string  { return "rpc_liveness" }
 
 func (c *RPCLiveness) Evaluate(probe EndpointProbe) Result {
 	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	if probe.RateLimited {
+		r.Skipped = true
+		return r
+	}
 	if probe.FetchErr != nil {
 		r.ConnFailed = probe.NetErr
 		r.Evidence = probe.FetchErr.Error()
