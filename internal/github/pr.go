@@ -2,12 +2,15 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 
 	"chain-registry-sentinel/internal/registry"
 )
@@ -39,69 +42,51 @@ type PRRequest struct {
 	RegistryPath string
 }
 
-// EditChainJSON reads {registryPath}/{chainName}/chain.json, removes the dead
-// addresses from all api sub-arrays, and returns the modified bytes.
+// EditChainJSON reads {registryPath}/{chainName}/chain.json, surgically removes
+// the dead addresses from all apis subarrays, and returns the modified bytes.
 // Returns nil, nil when nothing was removed (no-op signal).
+// The file's original formatting and key order are preserved.
 func EditChainJSON(registryPath, chainName string, dead []FlaggedEndpoint) ([]byte, error) {
 	path := filepath.Join(registryPath, chainName, "chain.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("EditChainJSON: %w", err)
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return nil, fmt.Errorf("EditChainJSON: %w", err)
-	}
+
 	deadAddrs := make(map[string]struct{}, len(dead))
 	for _, ep := range dead {
 		deadAddrs[ep.Address] = struct{}{}
 	}
-	apis, ok := parsed["apis"].(map[string]any)
-	if !ok || !removeDeadFromAPIs(apis, deadAddrs) {
+
+	// Collect indices to remove per api category.
+	toDelete := make(map[string][]int)
+	gjson.GetBytes(data, "apis").ForEach(func(category, endpoints gjson.Result) bool {
+		endpoints.ForEach(func(idx, ep gjson.Result) bool {
+			if _, isDead := deadAddrs[ep.Get("address").String()]; isDead {
+				cat := category.String()
+				toDelete[cat] = append(toDelete[cat], int(idx.Int()))
+			}
+			return true
+		})
+		return true
+	})
+
+	if len(toDelete) == 0 {
 		return nil, nil
 	}
-	out, err := json.MarshalIndent(parsed, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("EditChainJSON: %w", err)
-	}
-	return append(out, '\n'), nil
-}
 
-// removeDeadFromAPIs mutates the apis map in-place, removing dead addresses from
-// each endpoint array. Returns true if anything was removed.
-func removeDeadFromAPIs(apis map[string]any, deadAddrs map[string]struct{}) bool {
-	changed := false
-	for key, val := range apis {
-		raw, ok := val.([]any)
-		if !ok {
-			continue
-		}
-		filtered := filterEndpoints(raw, deadAddrs)
-		if len(filtered) != len(raw) {
-			apis[key] = filtered
-			changed = true
+	// Delete highest indices first to keep lower indices stable.
+	for cat, indices := range toDelete {
+		sort.Sort(sort.Reverse(sort.IntSlice(indices)))
+		for _, i := range indices {
+			data, err = sjson.DeleteBytes(data, fmt.Sprintf("apis.%s.%d", cat, i))
+			if err != nil {
+				return nil, fmt.Errorf("EditChainJSON: %w", err)
+			}
 		}
 	}
-	return changed
-}
 
-// filterEndpoints returns a new slice with dead addresses removed.
-// Always returns []any{} (never nil) so empty arrays marshal as [] not null.
-func filterEndpoints(raw []any, deadAddrs map[string]struct{}) []any {
-	result := make([]any, 0, len(raw))
-	for _, item := range raw {
-		ep, ok := item.(map[string]any)
-		if !ok {
-			result = append(result, item)
-			continue
-		}
-		addr, _ := ep["address"].(string)
-		if _, dead := deadAddrs[addr]; dead {
-			continue
-		}
-		result = append(result, item)
-	}
-	return result
+	return data, nil
 }
 
 // BuildPRBody renders the PR description as GitHub-flavored markdown.
