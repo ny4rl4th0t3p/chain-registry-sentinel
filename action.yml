@@ -36,6 +36,9 @@ inputs:
     default: '7'
   state-branch:
     description: 'Branch to persist state across runs (created automatically if missing). When set, the action restores state before probing and pushes it back after. state-path defaults to .sentinel-state if not set.'
+  verbose:
+    description: 'Enable debug logging to stderr'
+    default: 'false'
 
 runs:
   using: 'docker'
@@ -52,3 +55,4 @@ runs:
     INPUT_MAX_NEW_PRS: ${{ inputs.max-new-prs }}
     INPUT_PR_COOLDOWN_DAYS: ${{ inputs.pr-cooldown-days }}
     INPUT_STATE_BRANCH: ${{ inputs.state-branch }}
+    INPUT_VERBOSE: ${{ inputs.verbose }}
