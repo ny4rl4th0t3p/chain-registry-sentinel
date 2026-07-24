@@ -115,6 +115,26 @@ the action defaults `state-path` to `.sentinel-state` internally.
   the sentinel.
 - PRs are labelled `sentinel` and `automated` (both created automatically if missing).
 
+### IBC denom hash check
+
+IBC denoms in `assetlist.json` are derived values: `ibc/<HASH>` where `<HASH>` is the uppercase hex SHA256 of the
+asset's denom trace path (e.g. `transfer/channel-0/uatom`). Copy-paste errors and manual edits break this silently —
+the asset still looks valid to tooling that doesn't verify the derivation.
+
+On every run the sentinel recomputes the hash from the declared trace path and compares it to the `base` field. Unlike
+endpoint liveness, this is a deterministic local fact — no network calls, no failure streak, no `min-failures`
+threshold. A mismatch found on the first run opens a PR on the first run.
+
+- The trace path is treated as ground truth: it carries human-readable information (channel ID, denom) that the hash
+  does not. Only the `base` field is corrected.
+- For multi-hop assets, the last trace's `chain.path` already encodes the full accumulated path and is hashed as-is.
+  Assets with an `ibc/` base but no trace path cannot be verified and are skipped.
+- All wrong hashes for a chain are fixed in one commit, in a PR titled `[sentinel] fix IBC denom hash: {chain}` on a
+  branch named `sentinel/{chain}-hash-{N}`, labelled `sentinel` and `automated`.
+- The open-PR guard and `pr-cooldown-days` apply, tracked separately from endpoint-removal PRs — a hash PR and an
+  endpoint PR for the same chain can be open at the same time.
+- In dry-run mode the sentinel prints the would-be fixes instead of opening PRs.
+
 ### Checking a subset of chains
 
 ```yaml
@@ -160,4 +180,5 @@ go build -o sentinel ./cmd/sentinel/
   --dry-run
 ```
 
-Exit code is `0` when all endpoints are live; `1` when any are dead or have chain ID mismatches.
+Exit code is `0` when all endpoints are live; `1` when any are dead or have chain ID mismatches. IBC denom hash
+mismatches are reported and fixed via PR but do not affect the exit code.
