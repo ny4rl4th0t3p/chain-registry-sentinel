@@ -172,7 +172,8 @@ func OpenChainPR(ctx context.Context, client *Client, req PRRequest) (string, er
 			return "", fmt.Errorf("OpenChainPR: %w", err)
 		}
 	}
-	open, err := client.HasOpenPR(ctx, req.Owner, req.Repo, req.Chain.Name)
+	title := "[sentinel] remove dead endpoints: " + req.Chain.Name
+	open, err := client.HasOpenPR(ctx, req.Owner, req.Repo, title)
 	if err != nil {
 		return "", fmt.Errorf("OpenChainPR: %w", err)
 	}
@@ -209,7 +210,6 @@ func OpenChainPR(ctx context.Context, client *Client, req PRRequest) (string, er
 	if err := client.EnsureLabel(ctx, req.Owner, req.Repo, labelAutomated, colorAutomated); err != nil {
 		return "", fmt.Errorf("OpenChainPR: %w", err)
 	}
-	title := "[sentinel] remove dead endpoints: " + req.Chain.Name
 	body := BuildPRBody(req.Chain, req.Dead)
 	prNum, prURL, err := client.CreatePR(ctx, req.Owner, req.Repo, title, body, branch, baseBranch)
 	if err != nil {
@@ -217,6 +217,138 @@ func OpenChainPR(ctx context.Context, client *Client, req PRRequest) (string, er
 	}
 	if err := client.AddLabels(ctx, req.Owner, req.Repo, prNum, []string{labelSentinel, labelAutomated}); err != nil {
 		return "", fmt.Errorf("OpenChainPR: %w", err)
+	}
+	return prURL, nil
+}
+
+// HashFix describes one IBC asset whose base hash needs to be corrected.
+type HashFix struct {
+	AssetName string
+	Base      string // declared (wrong) hash: "ibc/WRONG"
+	Expected  string // correct hash: "ibc/SHA256(path)"
+	Path      string
+}
+
+// HashPRRequest contains everything needed to open a hash-fix PR for one chain.
+type HashPRRequest struct {
+	Owner        string
+	Repo         string
+	BaseBranch   string // empty → resolved via DefaultBranch
+	ChainName    string
+	Fixes        []HashFix
+	RegistryPath string
+}
+
+// EditAssetListJSON reads {registryPath}/{chainName}/assetlist.json and surgically
+// updates the base field of assets whose current base matches a fix's Base field.
+// Returns nil, nil when nothing was changed (no-op signal).
+func EditAssetListJSON(registryPath, chainName string, fixes []HashFix) ([]byte, error) {
+	p := filepath.Join(registryPath, chainName, "assetlist.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("EditAssetListJSON: %w", err)
+	}
+	fixMap := make(map[string]string, len(fixes))
+	for _, f := range fixes {
+		fixMap[f.Base] = f.Expected
+	}
+	type indexFix struct {
+		idx      int
+		expected string
+	}
+	var toFix []indexFix
+	gjson.GetBytes(data, "assets").ForEach(func(idx, asset gjson.Result) bool {
+		base := asset.Get("base").String()
+		if expected, ok := fixMap[base]; ok {
+			toFix = append(toFix, indexFix{int(idx.Int()), expected})
+		}
+		return true
+	})
+	if len(toFix) == 0 {
+		return nil, nil
+	}
+	for _, f := range toFix {
+		data, err = sjson.SetBytes(data, fmt.Sprintf("assets.%d.base", f.idx), f.expected)
+		if err != nil {
+			return nil, fmt.Errorf("EditAssetListJSON: %w", err)
+		}
+	}
+	return data, nil
+}
+
+// BuildHashMismatchPRBody renders the PR description for an IBC denom hash fix.
+func BuildHashMismatchPRBody(chainName string, fixes []HashFix) string {
+	var sb strings.Builder
+	sb.WriteString("## IBC denom hash mismatches\n\n")
+	sb.WriteString("The `base` field of these IBC assets does not match SHA256 of the declared trace path.\n")
+	sb.WriteString("The path is treated as ground truth; only the `base` (hash) field is updated.\n\n")
+	sb.WriteString("| Asset | Declared base | Expected base | Path |\n")
+	sb.WriteString("|-------|--------------|--------------|------|\n")
+	for _, f := range fixes {
+		fmt.Fprintf(&sb, "| `%s` | `%s` | `%s` | `%s` |\n", f.AssetName, f.Base, f.Expected, f.Path)
+	}
+	sb.WriteString("\n---\n\n")
+	fmt.Fprintf(&sb, "> Opened automatically by chain-registry-sentinel CI for chain `%s`.\n", chainName)
+	sb.WriteString("> Hash is recomputed from the `chain.path` of the last trace entry (SHA256 of the denom trace path string).\n")
+	return sb.String()
+}
+
+// OpenHashPR opens a PR to fix IBC denom hashes in a chain's assetlist.json.
+// Returns ("", nil) when a PR is already open or the edit is a no-op.
+func OpenHashPR(ctx context.Context, client *Client, req HashPRRequest) (string, error) {
+	baseBranch := req.BaseBranch
+	if baseBranch == "" {
+		var err error
+		baseBranch, err = client.DefaultBranch(ctx, req.Owner, req.Repo)
+		if err != nil {
+			return "", fmt.Errorf("OpenHashPR: %w", err)
+		}
+	}
+	title := "[sentinel] fix IBC denom hash: " + req.ChainName
+	open, err := client.HasOpenPR(ctx, req.Owner, req.Repo, title)
+	if err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	if open {
+		return "", nil
+	}
+	n, err := client.NextBranchN(ctx, req.Owner, req.Repo, req.ChainName+"-hash")
+	if err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	branch := fmt.Sprintf("sentinel/%s-hash-%d", req.ChainName, n)
+	filePath := req.ChainName + "/assetlist.json"
+	baseSHA, blobSHA, err := prepareCommit(ctx, client, req.Owner, req.Repo, baseBranch, filePath)
+	if err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	content, err := EditAssetListJSON(req.RegistryPath, req.ChainName, req.Fixes)
+	if err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	if content == nil {
+		return "", nil
+	}
+	if err := client.CreateBranch(ctx, req.Owner, req.Repo, branch, baseSHA); err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	commitMsg := "sentinel: fix IBC denom hashes in " + req.ChainName + "/assetlist.json"
+	if err := client.CommitFile(ctx, req.Owner, req.Repo, filePath, branch, commitMsg, blobSHA, content); err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	if err := client.EnsureLabel(ctx, req.Owner, req.Repo, labelSentinel, colorSentinel); err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	if err := client.EnsureLabel(ctx, req.Owner, req.Repo, labelAutomated, colorAutomated); err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	body := BuildHashMismatchPRBody(req.ChainName, req.Fixes)
+	prNum, prURL, err := client.CreatePR(ctx, req.Owner, req.Repo, title, body, branch, baseBranch)
+	if err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
+	}
+	if err := client.AddLabels(ctx, req.Owner, req.Repo, prNum, []string{labelSentinel, labelAutomated}); err != nil {
+		return "", fmt.Errorf("OpenHashPR: %w", err)
 	}
 	return prURL, nil
 }

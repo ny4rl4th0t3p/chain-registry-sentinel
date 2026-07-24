@@ -131,11 +131,10 @@ func (c *Client) NextBranchN(ctx context.Context, owner, repo, chain string) (in
 	return maxN + 1, nil
 }
 
-// HasOpenPR returns true if there is already an open PR for the given chain.
-// Searches for open PRs with the sentinel label and the standard PR title.
-func (c *Client) HasOpenPR(ctx context.Context, owner, repo, chain string) (bool, error) {
-	title := fmt.Sprintf("[sentinel] remove dead endpoints: %s", chain)
-	q := fmt.Sprintf(`repo:%s/%s is:pr is:open label:sentinel %q in:title`, owner, repo, title)
+// HasOpenPR returns true if there is already an open PR whose title contains titleFragment.
+// Searches for open PRs with the sentinel label.
+func (c *Client) HasOpenPR(ctx context.Context, owner, repo, titleFragment string) (bool, error) {
+	q := fmt.Sprintf(`repo:%s/%s is:pr is:open label:sentinel %q in:title`, owner, repo, titleFragment)
 	var dest struct {
 		TotalCount int `json:"total_count"`
 	}

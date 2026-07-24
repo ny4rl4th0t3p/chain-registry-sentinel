@@ -203,3 +203,99 @@ func TestBuildPRBody(t *testing.T) {
 		}
 	}
 }
+
+func writeAssetListJSON(t *testing.T, dir, chainName string, assets []any) {
+	t.Helper()
+	chainDir := filepath.Join(dir, chainName)
+	if err := os.MkdirAll(chainDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	doc := map[string]any{"chain_name": chainName, "assets": assets}
+	b, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(chainDir, "assetlist.json"), append(b, '\n'), 0o600); err != nil {
+		t.Fatalf("write assetlist.json: %v", err)
+	}
+}
+
+func TestEditAssetListJSON_fixOne(t *testing.T) {
+	dir := t.TempDir()
+	writeAssetListJSON(t, dir, "osmosis", []any{
+		map[string]any{
+			"name": "Cosmos Hub Atom",
+			"base": "ibc/WRONGHASH",
+			"traces": []any{
+				map[string]any{
+					"type":  "ibc",
+					"chain": map[string]any{"path": "transfer/channel-0/uatom"},
+				},
+			},
+		},
+	})
+	fixes := []github.HashFix{{
+		AssetName: "Cosmos Hub Atom",
+		Base:      "ibc/WRONGHASH",
+		Expected:  "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2",
+		Path:      "transfer/channel-0/uatom",
+	}}
+	out, err := github.EditAssetListJSON(dir, "osmosis", fixes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil {
+		t.Fatal("want non-nil output")
+	}
+	if strings.Contains(string(out), "ibc/WRONGHASH") {
+		t.Error("wrong hash should be replaced")
+	}
+	if !strings.Contains(string(out), "27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2") {
+		t.Error("correct hash should be present")
+	}
+	if !strings.Contains(string(out), "transfer/channel-0/uatom") {
+		t.Error("trace path should be preserved")
+	}
+}
+
+func TestEditAssetListJSON_noOp(t *testing.T) {
+	dir := t.TempDir()
+	writeAssetListJSON(t, dir, "osmosis", []any{
+		map[string]any{"name": "Atom", "base": "ibc/CORRECT"},
+	})
+	fixes := []github.HashFix{{
+		AssetName: "Atom",
+		Base:      "ibc/NOTPRESENT",
+		Expected:  "ibc/SOMETHING",
+		Path:      "transfer/channel-0/uatom",
+	}}
+	out, err := github.EditAssetListJSON(dir, "osmosis", fixes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != nil {
+		t.Error("want nil (no-op) when base not in file")
+	}
+}
+
+func TestBuildHashMismatchPRBody(t *testing.T) {
+	fixes := []github.HashFix{
+		{AssetName: "Atom", Base: "ibc/WRONG", Expected: "ibc/CORRECT", Path: "transfer/channel-0/uatom"},
+	}
+	body := github.BuildHashMismatchPRBody("osmosis", fixes)
+	if body == "" {
+		t.Fatal("want non-empty body")
+	}
+	if !strings.Contains(body, "osmosis") {
+		t.Error("body should contain chain name")
+	}
+	if !strings.Contains(body, "| Asset |") {
+		t.Error("body should contain table header")
+	}
+	if !strings.Contains(body, "ibc/WRONG") {
+		t.Error("body should contain declared hash")
+	}
+	if !strings.Contains(body, "ibc/CORRECT") {
+		t.Error("body should contain expected hash")
+	}
+}

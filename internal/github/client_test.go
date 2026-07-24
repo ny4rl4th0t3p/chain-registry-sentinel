@@ -76,7 +76,7 @@ func TestHasOpenPR_true(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]int{"total_count": 1})
 	})
-	got, err := client.HasOpenPR(context.Background(), "owner", "repo", "cosmoshub")
+	got, err := client.HasOpenPR(context.Background(), "owner", "repo", "[sentinel] remove dead endpoints: cosmoshub")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestHasOpenPR_false(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]int{"total_count": 0})
 	})
-	got, err := client.HasOpenPR(context.Background(), "owner", "repo", "cosmoshub")
+	got, err := client.HasOpenPR(context.Background(), "owner", "repo", "[sentinel] remove dead endpoints: cosmoshub")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
