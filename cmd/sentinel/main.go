@@ -562,7 +562,7 @@ func tryOpenChainPR(
 	dryRun bool,
 ) bool {
 	if cooldown > 0 && !cs.LastPROpenedAt.IsZero() && now.Sub(cs.LastPROpenedAt) < cooldown {
-		slog.Info("skipping PR (cooldown)", "chain", chain.Name, "last_pr", cs.LastPROpenedAt.Format(time.RFC3339))
+		slog.Warn("skipping PR (cooldown)", "chain", chain.Name, "last_pr", cs.LastPROpenedAt.Format(time.RFC3339))
 		return false
 	}
 	if dryRun {
@@ -581,7 +581,7 @@ func tryOpenChainPR(
 		return false
 	}
 	if prURL == "" {
-		slog.Info("PR skipped (already open or no-op)", "chain", chain.Name)
+		slog.Warn("PR skipped (already open or no-op)", "chain", chain.Name)
 		return false
 	}
 	fmt.Printf("opened PR: %s\n", prURL)
@@ -739,7 +739,7 @@ func tryOpenHashPR(
 	dryRun bool,
 ) bool {
 	if cooldown > 0 && !cs.LastHashPROpenedAt.IsZero() && now.Sub(cs.LastHashPROpenedAt) < cooldown {
-		slog.Info("skipping hash PR (cooldown)", "chain", chainName, "last_pr", cs.LastHashPROpenedAt.Format(time.RFC3339))
+		slog.Warn("skipping hash PR (cooldown)", "chain", chainName, "last_pr", cs.LastHashPROpenedAt.Format(time.RFC3339))
 		return false
 	}
 	if dryRun {
@@ -762,7 +762,7 @@ func tryOpenHashPR(
 		return false
 	}
 	if prURL == "" {
-		slog.Info("hash PR skipped (already open or no-op)", "chain", chainName)
+		slog.Warn("hash PR skipped (already open or no-op)", "chain", chainName)
 		return false
 	}
 	fmt.Printf("opened hash PR: %s\n", prURL)
