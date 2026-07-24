@@ -240,7 +240,8 @@ type HashPRRequest struct {
 }
 
 // EditAssetListJSON reads {registryPath}/{chainName}/assetlist.json and surgically
-// updates the base field of assets whose current base matches a fix's Base field.
+// updates the base field of assets whose current base matches a fix's Base field,
+// along with any denom_units entries carrying the same wrong hash.
 // Returns nil, nil when nothing was changed (no-op signal).
 func EditAssetListJSON(registryPath, chainName string, fixes []HashFix) ([]byte, error) {
 	p := filepath.Join(registryPath, chainName, "assetlist.json")
@@ -248,20 +249,34 @@ func EditAssetListJSON(registryPath, chainName string, fixes []HashFix) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("EditAssetListJSON: %w", err)
 	}
-	fixMap := make(map[string]string, len(fixes))
+	// Key on base AND trace path: a wrong hash can collide with another
+	// asset's correct base (e.g. a denom copy-pasted from a different IBC
+	// connection), and that asset must not be touched.
+	type fixKey struct{ base, path string }
+	fixMap := make(map[fixKey]string, len(fixes))
 	for _, f := range fixes {
-		fixMap[f.Base] = f.Expected
+		fixMap[fixKey{f.Base, f.Path}] = f.Expected
 	}
 	type indexFix struct {
 		idx      int
 		expected string
+		units    []int // denom_units entries that carry the wrong hash
 	}
 	var toFix []indexFix
 	gjson.GetBytes(data, "assets").ForEach(func(idx, asset gjson.Result) bool {
 		base := asset.Get("base").String()
-		if expected, ok := fixMap[base]; ok {
-			toFix = append(toFix, indexFix{int(idx.Int()), expected})
+		expected, ok := fixMap[fixKey{base, lastTracePath(asset.Get("traces"))}]
+		if !ok {
+			return true
 		}
+		f := indexFix{idx: int(idx.Int()), expected: expected}
+		asset.Get("denom_units").ForEach(func(uidx, unit gjson.Result) bool {
+			if unit.Get("denom").String() == base {
+				f.units = append(f.units, int(uidx.Int()))
+			}
+			return true
+		})
+		toFix = append(toFix, f)
 		return true
 	})
 	if len(toFix) == 0 {
@@ -272,8 +287,28 @@ func EditAssetListJSON(registryPath, chainName string, fixes []HashFix) ([]byte,
 		if err != nil {
 			return nil, fmt.Errorf("EditAssetListJSON: %w", err)
 		}
+		// The schema requires base to be present in denom_units, so the wrong
+		// hash there must be rewritten in the same pass.
+		for _, u := range f.units {
+			data, err = sjson.SetBytes(data, fmt.Sprintf("assets.%d.denom_units.%d.denom", f.idx, u), f.expected)
+			if err != nil {
+				return nil, fmt.Errorf("EditAssetListJSON: %w", err)
+			}
+		}
 	}
 	return data, nil
+}
+
+// lastTracePath returns chain.path from the last trace that has one set —
+// the same resolution rule registry.LoadAssetList uses to produce HashFix.Path.
+func lastTracePath(traces gjson.Result) string {
+	arr := traces.Array()
+	for i := len(arr) - 1; i >= 0; i-- {
+		if p := arr[i].Get("chain.path").String(); p != "" {
+			return p
+		}
+	}
+	return ""
 }
 
 // BuildHashMismatchPRBody renders the PR description for an IBC denom hash fix.
@@ -281,7 +316,7 @@ func BuildHashMismatchPRBody(chainName string, fixes []HashFix) string {
 	var sb strings.Builder
 	sb.WriteString("## IBC denom hash mismatches\n\n")
 	sb.WriteString("The `base` field of these IBC assets does not match SHA256 of the declared trace path.\n")
-	sb.WriteString("The path is treated as ground truth; only the `base` (hash) field is updated.\n\n")
+	sb.WriteString("The path is treated as ground truth; the `base` field and matching `denom_units` entries are updated.\n\n")
 	sb.WriteString("| Asset | Declared base | Expected base | Path |\n")
 	sb.WriteString("|-------|--------------|--------------|------|\n")
 	for _, f := range fixes {

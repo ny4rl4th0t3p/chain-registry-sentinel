@@ -126,7 +126,8 @@ endpoint liveness, this is a deterministic local fact — no network calls, no f
 threshold. A mismatch found on the first run opens a PR on the first run.
 
 - The trace path is treated as ground truth: it carries human-readable information (channel ID, denom) that the hash
-  does not. Only the `base` field is corrected.
+  does not. The `base` field is corrected, along with any `denom_units` entries carrying the same wrong hash (the
+  schema requires `base` to appear in `denom_units`).
 - For multi-hop assets, the last trace's `chain.path` already encodes the full accumulated path and is hashed as-is.
   Assets with an `ibc/` base but no trace path cannot be verified and are skipped.
 - All wrong hashes for a chain are fixed in one commit, in a PR titled `[sentinel] fix IBC denom hash: {chain}` on a

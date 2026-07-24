@@ -226,6 +226,10 @@ func TestEditAssetListJSON_fixOne(t *testing.T) {
 		map[string]any{
 			"name": "Cosmos Hub Atom",
 			"base": "ibc/WRONGHASH",
+			"denom_units": []any{
+				map[string]any{"denom": "ibc/WRONGHASH", "exponent": 0},
+				map[string]any{"denom": "atom", "exponent": 6},
+			},
 			"traces": []any{
 				map[string]any{
 					"type":  "ibc",
@@ -248,13 +252,71 @@ func TestEditAssetListJSON_fixOne(t *testing.T) {
 		t.Fatal("want non-nil output")
 	}
 	if strings.Contains(string(out), "ibc/WRONGHASH") {
-		t.Error("wrong hash should be replaced")
+		t.Error("wrong hash should be replaced everywhere, including denom_units")
 	}
-	if !strings.Contains(string(out), "27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2") {
-		t.Error("correct hash should be present")
+	if got := strings.Count(string(out), "27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2"); got != 2 {
+		t.Errorf("correct hash should appear in base and denom_units, got %d occurrence(s)", got)
+	}
+	if !strings.Contains(string(out), `"denom": "atom"`) {
+		t.Error("unrelated denom_units entry should be untouched")
 	}
 	if !strings.Contains(string(out), "transfer/channel-0/uatom") {
 		t.Error("trace path should be preserved")
+	}
+}
+
+func TestEditAssetListJSON_duplicateBaseLeavesLegitAssetUntouched(t *testing.T) {
+	dir := t.TempDir()
+	// Asset one legitimately owns the hash; asset two copy-pasted it from
+	// asset one's IBC connection while declaring a different trace path.
+	// Only asset two may be rewritten.
+	const atomHash = "ibc/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2"
+	writeAssetListJSON(t, dir, "zigchain", []any{
+		map[string]any{
+			"name": "Cosmos Hub Atom",
+			"base": atomHash,
+			"denom_units": []any{
+				map[string]any{"denom": atomHash, "exponent": 0},
+			},
+			"traces": []any{
+				map[string]any{
+					"type":  "ibc",
+					"chain": map[string]any{"path": "transfer/channel-0/uatom"},
+				},
+			},
+		},
+		map[string]any{
+			"name": "Noble USDC",
+			"base": atomHash,
+			"denom_units": []any{
+				map[string]any{"denom": atomHash, "exponent": 0},
+			},
+			"traces": []any{
+				map[string]any{
+					"type":  "ibc",
+					"chain": map[string]any{"path": "transfer/channel-2/uusdc"},
+				},
+			},
+		},
+	})
+	fixes := []github.HashFix{{
+		AssetName: "Noble USDC",
+		Base:      atomHash,
+		Expected:  "ibc/USDCEXPECTED",
+		Path:      "transfer/channel-2/uusdc",
+	}}
+	out, err := github.EditAssetListJSON(dir, "zigchain", fixes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil {
+		t.Fatal("want non-nil output")
+	}
+	if got := strings.Count(string(out), atomHash); got != 2 {
+		t.Errorf("legit asset's base and denom_units must keep the hash, want 2 occurrences, got %d", got)
+	}
+	if got := strings.Count(string(out), "ibc/USDCEXPECTED"); got != 2 {
+		t.Errorf("flagged asset's base and denom_units must be rewritten, want 2 occurrences, got %d", got)
 	}
 }
 
