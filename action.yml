@@ -1,5 +1,8 @@
 name: 'Chain Registry Sentinel'
 description: 'Verify chain-registry entries against reality and open PRs for dead endpoints'
+branding:
+  icon: 'eye'
+  color: 'blue'
 
 inputs:
   registry:

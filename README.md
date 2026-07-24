@@ -11,6 +11,17 @@ proposes a correction through a pull request, with the evidence attached and a c
 The goal is not to replace human judgment. Every proposed change goes through a normal PR that a maintainer approves or
 closes. The sentinel just does the tedious part: watching endpoints, counting failures, and writing up findings.
 
+## What it checks
+
+- **Endpoint liveness** — probes every declared RPC, REST, gRPC, gRPC-web, EVM JSON-RPC, and WSS endpoint. Failures
+  are tracked across runs; an endpoint is only flagged after `min-failures` consecutive failing runs, and re-probed
+  once more before a removal PR is opened.
+- **Chain ID** — RPC endpoints that respond with a different chain ID than the registry declares are reported.
+- **IBC denom hash integrity** — recomputes each IBC asset's `ibc/<HASH>` denom from its declared trace path and opens
+  a fix PR on any mismatch. Deterministic and local — no failure streak needed.
+
+Checks that only detect (and can't safely auto-fix) are on the [roadmap](#roadmap).
+
 ---
 
 ## Using the GitHub Action
@@ -39,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: YOUR_ORG/chain-registry-sentinel@main
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.0
         with:
           registry: .
           state-branch: sentinel-state
@@ -57,7 +68,7 @@ default branch and its protection rules — the same pattern `gh-pages` uses. It
 git history and never expires.
 
 ```yaml
-      - uses: YOUR_ORG/chain-registry-sentinel@main
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.0
         with:
           registry: .
           state-branch: sentinel-state
@@ -76,7 +87,7 @@ streaks are lost. Only use this when you cannot write to the repo.
           key: sentinel-state-${{ github.run_id }}
           restore-keys: sentinel-state-
 
-      - uses: YOUR_ORG/chain-registry-sentinel@main
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.0
         with:
           registry: .
           state-path: .sentinel-state
@@ -139,7 +150,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Checking a subset of chains
 
 ```yaml
-      - uses: YOUR_ORG/chain-registry-sentinel@main
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.0
         with:
           registry: .
           chains: cosmoshub,osmosis,juno
@@ -150,7 +161,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Dry-run (no writes, no PRs)
 
 ```yaml
-      - uses: YOUR_ORG/chain-registry-sentinel@main
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.0
         with:
           registry: .
           state-path: .sentinel-state
@@ -183,3 +194,16 @@ go build -o sentinel ./cmd/sentinel/
 
 Exit code is `0` when all endpoints are live; `1` when any are dead or have chain ID mismatches. IBC denom hash
 mismatches are reported and fixed via PR but do not affect the exit code.
+
+---
+
+## Roadmap
+
+Two further IBC checks are under research. Both detect problems that have no unambiguous automated fix, so what a
+finding should trigger (a PR removing the entry, an issue, or a report) is an open policy question — input from
+registry maintainers is welcome before these are built.
+
+- **IBC channel state** — verify that channels declared in `_IBC/*.json` actually report `OPEN` on both chains, with
+  failure streaks since closed channels can be reopened by a relayer.
+- **IBC client expiry** — a channel can report `OPEN` while its underlying light client has expired past its trusting
+  period, silently breaking the connection. This check would catch that failure mode underneath the channel check.
