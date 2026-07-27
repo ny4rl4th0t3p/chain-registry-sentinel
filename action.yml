@@ -20,6 +20,9 @@ inputs:
     default: '250'
   state-path:
     description: 'Directory for per-chain state files (enables failure tracking across runs)'
+  reset-state:
+    description: 'Start unreadable state files from scratch instead of failing the step'
+    default: 'false'
   min-failures:
     description: 'Consecutive failures before flagging an endpoint for removal'
     default: '14'
@@ -49,6 +52,7 @@ runs:
     INPUT_TIMEOUT: ${{ inputs.timeout }}
     INPUT_CONCURRENCY: ${{ inputs.concurrency }}
     INPUT_STATE_PATH: ${{ inputs.state-path }}
+    INPUT_RESET_STATE: ${{ inputs.reset-state }}
     INPUT_MIN_FAILURES: ${{ inputs.min-failures }}
     INPUT_DRY_RUN: ${{ inputs.dry-run }}
     INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}

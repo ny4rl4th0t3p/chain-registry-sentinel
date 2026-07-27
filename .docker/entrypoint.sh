@@ -23,7 +23,11 @@ if [ -n "$INPUT_STATE_BRANCH" ] && [ -n "$STATE_PATH" ]; then
     fi
 fi
 
-/sentinel "$@" || true
+# No `|| true` here on purpose. The sentinel exits 0 whenever it ran, findings included, so a
+# non-zero status means it could not run at all — which must fail the step rather than be
+# absorbed into a green run that probed nothing. set -e also skips the state push below, which is
+# correct: there is nothing new to persist.
+/sentinel "$@"
 
 # Persist state back to branch after probing (skip on dry-run)
 if [ -n "$INPUT_STATE_BRANCH" ] && [ -n "$STATE_PATH" ] && [ "$INPUT_DRY_RUN" != "true" ]; then

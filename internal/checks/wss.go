@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,6 +18,12 @@ type WSSProbe struct {
 	Network  string
 	FetchErr error
 	NetErr   bool
+	// A rejected upgrade still carries an HTTP response, so status, body and rate limiting are
+	// all observable here just as they are for the plain HTTP checks.
+	RateLimited bool
+	StatusCode  int
+	Body        string
+	Latency     time.Duration
 }
 
 const wssStatusRequest = `{"jsonrpc":"2.0","method":"status","params":{},"id":1}`
@@ -25,8 +32,11 @@ const wssStatusRequest = `{"jsonrpc":"2.0","method":"status","params":{},"id":1}
 // request to retrieve the chain ID. A dial failure with no HTTP response is a
 // network error; a server that rejects the upgrade or doesn't speak the
 // Tendermint protocol is a wrong-response failure.
-func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) WSSProbe {
-	probe := WSSProbe{Chain: chain, Endpoint: ep}
+func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) (probe WSSProbe) {
+	probe = WSSProbe{Chain: chain, Endpoint: ep}
+	// Named return plus defer so latency is recorded on every exit path, including errors.
+	start := time.Now()
+	defer func() { probe.Latency = time.Since(start) }()
 
 	var timeout time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
@@ -37,10 +47,15 @@ func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.End
 	conn, resp, err := dialer.DialContext(ctx, ep.Address, nil)
 	if resp != nil {
 		defer resp.Body.Close()
+		probe.StatusCode = resp.StatusCode
 	}
 	if err != nil {
 		probe.FetchErr = err
 		probe.NetErr = resp == nil // no HTTP response at all = transport failure
+		if resp != nil {
+			probe.Body = readBodyPrefix(resp.Body)
+			probe.RateLimited = resp.StatusCode == http.StatusTooManyRequests
+		}
 		return probe
 	}
 	defer conn.Close()
@@ -98,14 +113,16 @@ type WSSLiveness struct{}
 func NewWSSLiveness() *WSSLiveness { return &WSSLiveness{} }
 func (*WSSLiveness) Name() string  { return "wss_liveness" }
 
-func (c *WSSLiveness) Evaluate(probe WSSProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
-	if probe.FetchErr != nil {
-		r.ConnFailed = probe.NetErr
-		r.Evidence = probe.FetchErr.Error()
-		return r
+func (p WSSProbe) outcome() livenessOutcome {
+	return livenessOutcome{
+		FetchErr: p.FetchErr, NetErr: p.NetErr, RateLimited: p.RateLimited,
+		StatusCode: p.StatusCode, Body: p.Body, Latency: p.Latency,
 	}
-	r.Passed = true
+}
+
+func (c *WSSLiveness) Evaluate(probe WSSProbe) Result {
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
+	applyLiveness(&r, probe.outcome())
 	return r
 }
 
@@ -115,7 +132,7 @@ func NewWSSChainID() *WSSChainID { return &WSSChainID{} }
 func (*WSSChainID) Name() string { return "wss_chain_id" }
 
 func (c *WSSChainID) Evaluate(probe WSSProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
 	if probe.FetchErr != nil {
 		r.Skipped = true
 		return r
@@ -123,6 +140,7 @@ func (c *WSSChainID) Evaluate(probe WSSProbe) Result {
 	if probe.Network == probe.Chain.ChainID {
 		r.Passed = true
 	} else {
+		r.FailureClass = ClassChainIDMismatch
 		r.Evidence = fmt.Sprintf("got=%s want=%s", probe.Network, probe.Chain.ChainID)
 	}
 	return r

@@ -25,6 +25,22 @@ type EndpointState struct {
 	FirstEvidence       string    `json:"first_evidence"`
 	LastChecked         time.Time `json:"last_checked"`
 	FirstFailureTime    time.Time `json:"first_failure_time"`
+
+	// Diagnostics carried alongside the streak so a state directory is analyzable on its own,
+	// without re-deriving causes from evidence strings.
+	//
+	// currentSchemaVersion deliberately stays at 1. Adding optional fields is compatible in both
+	// directions — new code reads an old file as zero values, and old code ignores fields it does
+	// not know, which is encoding/json's default — so there is no incompatibility for a version
+	// number to signal. Because Load compares versions for exact equality, a bump would
+	// manufacture one and discard every existing state file to convey nothing.
+	//
+	// Bump only for a genuinely breaking change: a renamed or retyped field, a changed meaning
+	// for an existing field (e.g. ConsecutiveFailures counting days rather than runs), or a new
+	// endpoint key format.
+	Provider     string              `json:"provider,omitempty"`
+	FailureClass checks.FailureClass `json:"failure_class,omitempty"`
+	HTTPStatus   int                 `json:"http_status,omitempty"`
 }
 
 type ChainState struct {
@@ -50,8 +66,24 @@ func Load(path string) (ChainState, error) {
 	if err := json.Unmarshal(data, &cs); err != nil {
 		return ChainState{}, fmt.Errorf("load state %s: %w", path, err)
 	}
-	if cs.Version != currentSchemaVersion {
-		return ChainState{}, fmt.Errorf("load state %s: unsupported schema version %d (want %d)", path, cs.Version, currentSchemaVersion)
+	// Older and newer are different risks, so they are not collapsed into one check.
+	//
+	// A version above ours was written by a build that knows fields or meanings this one does
+	// not, so reading it could silently misinterpret data — refuse.
+	//
+	// A version below ours is readable: every change so far has been additive, so absent fields
+	// unmarshal as zero values. When a genuinely breaking change lands, migration goes here
+	// rather than in a rejection.
+	//
+	// Zero means the version key was missing or unparseable, which is a malformed file rather
+	// than an old one. Accepting it would let a truncated write masquerade as empty state.
+	if cs.Version < 1 {
+		return ChainState{}, fmt.Errorf("load state %s: missing or invalid schema version", path)
+	}
+	if cs.Version > currentSchemaVersion {
+		return ChainState{}, fmt.Errorf(
+			"load state %s: written by a newer sentinel (schema v%d, this build understands v%d)",
+			path, cs.Version, currentSchemaVersion)
 	}
 	if cs.Endpoints == nil {
 		cs.Endpoints = make(map[string]EndpointState)
@@ -88,11 +120,17 @@ func (cs *ChainState) Update(r checks.Result, now time.Time) {
 	es.LastChecked = now
 	es.LastPassed = r.Passed
 	es.LastEvidence = r.Evidence
+	// Provider describes the registry entry, not the failure, so it is kept in both branches.
+	es.Provider = r.Provider
+	es.FailureClass = r.FailureClass
+	es.HTTPStatus = r.HTTPStatus
 	if r.Passed {
 		es.ConsecutiveFailures = 0
 		es.FirstFailureTime = time.Time{}
 		es.FirstEvidence = ""
 		es.LastEvidence = ""
+		es.FailureClass = ""
+		es.HTTPStatus = 0
 	} else {
 		if es.ConsecutiveFailures == 0 {
 			es.FirstFailureTime = now

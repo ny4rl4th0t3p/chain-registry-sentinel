@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"chain-registry-sentinel/internal/registry"
 )
@@ -21,14 +22,22 @@ type GRPCWebProbe struct {
 	FetchErr    error
 	NetErr      bool
 	RateLimited bool
+	StatusCode  int
+	Body        string
+	Latency     time.Duration
 }
 
 // ProbeGRPCWebEndpoint calls GetNodeInfo via the gRPC-web wire protocol.
 // It sends a 5-byte length-prefixed frame with an empty body (GetNodeInfo
 // takes no parameters) and decodes the response using the same protowire
 // path as the native gRPC probe.
-func ProbeGRPCWebEndpoint(ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint) GRPCWebProbe {
-	probe := GRPCWebProbe{Chain: chain, Endpoint: ep}
+func ProbeGRPCWebEndpoint(
+	ctx context.Context, client *http.Client, chain registry.Chain, ep registry.Endpoint,
+) (probe GRPCWebProbe) {
+	probe = GRPCWebProbe{Chain: chain, Endpoint: ep}
+	// Named return plus defer so latency is recorded on every exit path, including errors.
+	start := time.Now()
+	defer func() { probe.Latency = time.Since(start) }()
 
 	// gRPC-web data frame: 1 flag byte (0x00 = data) + 4-byte big-endian length + body.
 	// Empty request body → length = 0.
@@ -52,7 +61,9 @@ func ProbeGRPCWebEndpoint(ctx context.Context, client *http.Client, chain regist
 	}
 	defer resp.Body.Close()
 
+	probe.StatusCode = resp.StatusCode
 	if resp.StatusCode != http.StatusOK {
+		probe.Body = readBodyPrefix(resp.Body)
 		probe.FetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 		probe.RateLimited = resp.StatusCode == http.StatusTooManyRequests
 		return probe
@@ -89,18 +100,16 @@ type GRPCWebLiveness struct{}
 func NewGRPCWebLiveness() *GRPCWebLiveness { return &GRPCWebLiveness{} }
 func (*GRPCWebLiveness) Name() string      { return "grpc_web_liveness" }
 
+func (p GRPCWebProbe) outcome() livenessOutcome {
+	return livenessOutcome{
+		FetchErr: p.FetchErr, NetErr: p.NetErr, RateLimited: p.RateLimited,
+		StatusCode: p.StatusCode, Body: p.Body, Latency: p.Latency,
+	}
+}
+
 func (c *GRPCWebLiveness) Evaluate(probe GRPCWebProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
-	if probe.RateLimited {
-		r.Skipped = true
-		return r
-	}
-	if probe.FetchErr != nil {
-		r.ConnFailed = probe.NetErr
-		r.Evidence = probe.FetchErr.Error()
-		return r
-	}
-	r.Passed = true
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
+	applyLiveness(&r, probe.outcome())
 	return r
 }
 
@@ -110,7 +119,7 @@ func NewGRPCWebChainID() *GRPCWebChainID { return &GRPCWebChainID{} }
 func (*GRPCWebChainID) Name() string     { return "grpc_web_chain_id" }
 
 func (c *GRPCWebChainID) Evaluate(probe GRPCWebProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
 	if probe.FetchErr != nil {
 		r.Skipped = true
 		return r
@@ -118,6 +127,7 @@ func (c *GRPCWebChainID) Evaluate(probe GRPCWebProbe) Result {
 	if probe.Network == probe.Chain.ChainID {
 		r.Passed = true
 	} else {
+		r.FailureClass = ClassChainIDMismatch
 		r.Evidence = fmt.Sprintf("got=%s want=%s", probe.Network, probe.Chain.ChainID)
 	}
 	return r

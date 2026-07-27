@@ -101,6 +101,7 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
 | `timeout`          | `30s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
 | `concurrency`      | `250`    | Maximum simultaneous endpoint probes.                                                            |
 | `state-path`       | _(none)_ | Directory for per-chain state files. Use when managing persistence externally.                   |
+| `reset-state`      | `false`  | Start unreadable state files from scratch instead of failing the step.                           |
 | `state-branch`     | _(none)_ | Branch to persist state automatically (created on first push).                                   |
 | `min-failures`     | `14`     | Consecutive failing **runs** before an endpoint is flagged.                                      |
 | `dry-run`          | `false`  | Report and show would-be PRs, but write nothing and open nothing.                                |
@@ -149,9 +150,15 @@ open PR already blocks duplicates on its own (see PR behaviour below).
 
 ### Step outcome
 
-The action step **always succeeds**, even when dead endpoints or mismatches are found — the sentinel's exit code is
-absorbed so a scheduled run never shows red. The signal is the log summary and the opened PRs. (Running the binary
-directly does set an exit code; see below.)
+The step is **green whenever the sentinel ran**, findings included. Dead endpoints are the expected steady state of a
+decaying registry, so a red run for them would fire every time and mean nothing. The signal is the log summary and the
+opened PRs.
+
+The step **fails only when the sentinel could not run**: an unreadable registry path, no chains found, or state files
+that exist but cannot be parsed. A run that probed nothing must not look like a clean one, or the only symptom is PRs
+quietly ceasing to appear days later.
+
+Nothing is absorbed or rewritten in between — the step outcome is exactly the binary's exit code.
 
 ### PR behaviour
 
@@ -229,8 +236,13 @@ go build -o sentinel ./cmd/sentinel/
   --dry-run
 ```
 
-Exit code is `0` when all endpoints are live; `1` when any are dead or have chain ID mismatches. IBC denom hash
-mismatches are reported and fixed via PR but do not affect the exit code.
+Exit code is `0` whenever the sentinel ran, whether or not it found dead endpoints, chain ID mismatches or IBC denom
+hash errors — reporting that is the job, not a failure. It is `1` only when the sentinel could not run: an unreadable
+registry path, no chains found, or state files that exist but cannot be parsed.
+
+Unreadable state aborts rather than starting those chains from scratch, because a silent reset discards failure streaks
+that take days to rebuild while the run still finishes normally. Fix or delete the offending files, or pass
+`--reset-state` to accept the loss deliberately.
 
 ---
 

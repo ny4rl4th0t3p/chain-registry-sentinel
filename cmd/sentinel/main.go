@@ -29,6 +29,7 @@ type CLI struct {
 	Timeout        time.Duration    `help:"HTTP timeout per request" env:"INPUT_TIMEOUT" default:"30s"`
 	Concurrency    int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"250"`
 	StatePath      string           `help:"Directory for per-chain state files" env:"INPUT_STATE_PATH"`
+	ResetState     bool             `help:"Start unreadable state files from scratch instead of aborting" env:"INPUT_RESET_STATE"`
 	MinFailures    int              `help:"Consecutive failures before flagging an endpoint" env:"INPUT_MIN_FAILURES" default:"14"`
 	DryRun         bool             `help:"Read state but do not write it or open PRs" env:"INPUT_DRY_RUN"`
 	GithubToken    string           `help:"GitHub token for opening PRs" env:"INPUT_GITHUB_TOKEN"`
@@ -38,6 +39,17 @@ type CLI struct {
 	Verbose        bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
 	Version        kong.VersionFlag `name:"version" help:"Print version and exit"`
 }
+
+// exitFatal is returned only when the sentinel could not run: an unreadable registry, no chains,
+// or state files that exist but cannot be parsed.
+//
+// Findings deliberately exit 0. Dead endpoints are the expected steady state of a decaying
+// registry, so a non-zero code for them fires on every run forever and therefore carries no
+// information. It also had a cost: because findings were non-zero, the Docker entrypoint needed
+// `|| true` to keep scheduled runs green, and that swallowed genuine failures — a run that
+// probed nothing looked exactly like a clean one. Reserving non-zero for "could not run" removes
+// the need to absorb anything.
+const exitFatal = 1
 
 type typeStats struct {
 	total       int
@@ -230,9 +242,12 @@ func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurre
 			for j := range jobCh {
 				slog.Debug("probing", "chain", j.chain.Name, "endpoint", j.endpoint.Address, "type", j.endpointType)
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
-				for _, r := range runProbe(ctx, client, j) {
-					if !r.Skipped {
-						resultCh <- r
+				// Indexed rather than ranged by value: checks.Result is large enough that
+				// copying it per iteration is wasteful (and gocritic's rangeValCopy flags it).
+				probes := runProbe(ctx, client, j)
+				for i := range probes {
+					if !probes[i].Skipped {
+						resultCh <- probes[i]
 					}
 				}
 				cancel()
@@ -329,18 +344,57 @@ func buildActiveLivenessKeys(jobs []job) map[string]map[string]struct{} {
 	return active
 }
 
-func loadStateMap(chains []registry.Chain, statePath string) map[string]state.ChainState {
+// missingFromRegistry returns the --chains entries that matched no loaded chain, so they can be
+// reported rather than silently ignored: a typo'd or renamed chain would otherwise look like a
+// clean run that simply found nothing wrong.
+func missingFromRegistry(filter []string, chains []registry.Chain) []string {
+	if len(filter) == 0 {
+		return nil
+	}
+	loaded := make(map[string]bool, len(chains))
+	for i := range chains {
+		loaded[chains[i].Name] = true
+	}
+	var missing []string
+	for _, name := range filter {
+		if !loaded[name] {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// loadStateMap reads per-chain state, refusing to silently discard streaks it cannot parse.
+//
+// state.Load returns empty state and no error when a file is simply absent, which is the normal
+// first run, so an error here means the file exists and could not be understood. Resetting those
+// chains quietly would wipe streaks that take days to rebuild while the run still finished green
+// — the symptom would appear much later, as PRs that never open, with nothing in the output
+// pointing at the cause. Aborting is recoverable in seconds; silent loss is not.
+func loadStateMap(
+	chains []registry.Chain, statePath string, resetState bool,
+) (map[string]state.ChainState, error) {
 	stateMap := make(map[string]state.ChainState, len(chains))
+	var unreadable []string
 	for i := range chains {
 		cs, err := state.Load(filepath.Join(statePath, chains[i].Name+".json"))
 		if err != nil {
-			slog.Warn("could not load state", "chain", chains[i].Name, "err", err)
+			unreadable = append(unreadable, fmt.Sprintf("%s: %v", chains[i].Name, err))
 			cs = state.ChainState{Endpoints: make(map[string]state.EndpointState)}
 		}
 		cs.ChainID = chains[i].ChainID
 		stateMap[chains[i].Name] = cs
 	}
-	return stateMap
+	if len(unreadable) > 0 {
+		if !resetState {
+			return nil, fmt.Errorf(
+				"%d state file(s) could not be read; refusing to discard accumulated streaks.\n"+
+					"Fix or delete them, or pass --reset-state to start those chains fresh:\n  %s",
+				len(unreadable), strings.Join(unreadable, "\n  "))
+		}
+		slog.Warn("discarding unreadable state files", "count", len(unreadable))
+	}
+	return stateMap, nil
 }
 
 func updateState(
@@ -350,19 +404,23 @@ func updateState(
 	threshold int,
 	now time.Time,
 ) int {
-	for _, r := range results {
+	for i := range results {
+		r := &results[i]
 		if r.Skipped || !strings.HasSuffix(r.Check, "_liveness") {
 			continue
 		}
 		cs := stateMap[r.Chain]
-		cs.Update(r, now)
+		cs.Update(*r, now)
 		stateMap[r.Chain] = cs
 	}
 	flagged := 0
 	for chainName, cs := range stateMap {
 		cs.Prune(activeKeys[chainName])
 		stateMap[chainName] = cs
-		for key, ep := range cs.Endpoints {
+		// Keys only, then an explicit lookup: EndpointState is too large to copy on every
+		// iteration. Do not collapse this back into `for key, ep := range`.
+		for key := range cs.Endpoints {
+			ep := cs.Endpoints[key]
 			if ep.ConsecutiveFailures >= threshold {
 				flagged++
 				slog.Warn("endpoint flagged for action",
@@ -385,7 +443,7 @@ func saveStateMap(stateMap map[string]state.ChainState, statePath string, now ti
 	}
 }
 
-func printSummary(perChain map[string]*chainStats, keys []string) chainStats {
+func printSummary(perChain map[string]*chainStats, keys []string) {
 	var totals chainStats
 	for _, s := range perChain {
 		totals.rpc.add(s.rpc)
@@ -434,8 +492,6 @@ func printSummary(perChain map[string]*chainStats, keys []string) chainStats {
 		totals.allEndpoints(), totals.allLive(), totals.allDead(),
 		totals.allUnreachable(), totals.allWrongResp(),
 		totals.chainIDFail, len(perChain))
-
-	return totals
 }
 
 // splitRepo splits "owner/repo" into two strings. Returns ("", ownerRepo) when malformed.
@@ -452,7 +508,10 @@ func splitRepo(ownerRepo string) (owner, repo string) {
 func collectFlagged(stateMap map[string]state.ChainState, threshold int) map[string][]github.FlaggedEndpoint {
 	result := make(map[string][]github.FlaggedEndpoint)
 	for chainName, cs := range stateMap {
-		for key, ep := range cs.Endpoints {
+		// Keys only, then an explicit lookup — see updateState: EndpointState is too large to
+		// copy per iteration.
+		for key := range cs.Endpoints {
+			ep := cs.Endpoints[key]
 			if ep.ConsecutiveFailures < threshold {
 				continue
 			}
@@ -852,33 +911,26 @@ func main() {
 	chains, err := registry.LoadChains(cli.Registry, filter)
 	if err != nil {
 		slog.Error("failed to load chains", "err", err)
-		os.Exit(1)
+		os.Exit(exitFatal)
 	}
 	if len(chains) == 0 {
 		slog.Error("no chains found in registry")
-		os.Exit(1)
+		os.Exit(exitFatal)
 	}
 	slog.Debug("chains loaded", "count", len(chains))
 
-	var missingChains []string
-	if len(filter) > 0 {
-		loaded := make(map[string]bool, len(chains))
-		for i := range chains {
-			loaded[chains[i].Name] = true
-		}
-		for _, name := range filter {
-			if !loaded[name] {
-				missingChains = append(missingChains, name)
-			}
-		}
-	}
+	missingChains := missingFromRegistry(filter, chains)
 
 	jobs := buildJobs(chains)
 	client := checks.NewHTTPClient(cli.Timeout)
 
 	var stateMap map[string]state.ChainState
 	if cli.StatePath != "" {
-		stateMap = loadStateMap(chains, cli.StatePath)
+		stateMap, err = loadStateMap(chains, cli.StatePath, cli.ResetState)
+		if err != nil {
+			slog.Error("failed to load state", "err", err)
+			os.Exit(exitFatal)
+		}
 	}
 
 	resultCh := runWorkers(jobs, client, cli.Timeout, cli.Concurrency)
@@ -894,7 +946,7 @@ func main() {
 		}
 	}
 
-	totals := printSummary(perChain, keys)
+	printSummary(perChain, keys)
 
 	if flagged > 0 {
 		fmt.Printf("%d endpoint(s) flagged for action\n", flagged)
@@ -904,9 +956,5 @@ func main() {
 
 	for _, name := range missingChains {
 		slog.Warn("chain not found in registry", "chain", name, "hint", "no chain.json — may be EVM-only or unlisted")
-	}
-
-	if totals.allDead() > 0 || totals.chainIDFail > 0 {
-		os.Exit(1)
 	}
 }

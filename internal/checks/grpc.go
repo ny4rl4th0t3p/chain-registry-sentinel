@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -46,14 +47,18 @@ type GRPCProbe struct {
 	FetchErr    error
 	NetErr      bool
 	RateLimited bool
+	Latency     time.Duration
 }
 
 const getNodeInfoMethod = "/cosmos.base.tendermint.v1beta1.Service/GetNodeInfo"
 
 // ProbeGRPCEndpoint calls GetNodeInfo on a Cosmos SDK gRPC endpoint.
 // The method has been stable since Cosmos SDK 0.40 (Stargate, Jan 2021).
-func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) GRPCProbe {
-	probe := GRPCProbe{Chain: chain, Endpoint: ep}
+func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) (probe GRPCProbe) {
+	probe = GRPCProbe{Chain: chain, Endpoint: ep}
+	// Named return plus defer so latency is recorded on every exit path, including errors.
+	start := time.Now()
+	defer func() { probe.Latency = time.Since(start) }()
 
 	target, useTLS, err := parseGRPCTarget(ep.Address)
 	if err != nil {
@@ -188,18 +193,17 @@ type GRPCLiveness struct{}
 func NewGRPCLiveness() *GRPCLiveness { return &GRPCLiveness{} }
 func (*GRPCLiveness) Name() string   { return "grpc_liveness" }
 
+// outcome leaves StatusCode and Body zero: gRPC folds any HTTP status and body into the status
+// message, which Classify reads from the error text once the transport-level checks decline.
+func (p GRPCProbe) outcome() livenessOutcome {
+	return livenessOutcome{
+		FetchErr: p.FetchErr, NetErr: p.NetErr, RateLimited: p.RateLimited, Latency: p.Latency,
+	}
+}
+
 func (c *GRPCLiveness) Evaluate(probe GRPCProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
-	if probe.RateLimited {
-		r.Skipped = true
-		return r
-	}
-	if probe.FetchErr != nil {
-		r.ConnFailed = probe.NetErr
-		r.Evidence = probe.FetchErr.Error()
-		return r
-	}
-	r.Passed = true
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
+	applyLiveness(&r, probe.outcome())
 	return r
 }
 
@@ -209,7 +213,7 @@ func NewGRPCChainID() *GRPCChainID { return &GRPCChainID{} }
 func (*GRPCChainID) Name() string  { return "grpc_chain_id" }
 
 func (c *GRPCChainID) Evaluate(probe GRPCProbe) Result {
-	r := Result{Chain: probe.Chain.Name, ChainID: probe.Chain.ChainID, Check: c.Name(), Endpoint: probe.Endpoint.Address}
+	r := newResult(probe.Chain, probe.Endpoint, c.Name())
 	if probe.FetchErr != nil {
 		r.Skipped = true
 		return r
@@ -217,6 +221,7 @@ func (c *GRPCChainID) Evaluate(probe GRPCProbe) Result {
 	if probe.Network == probe.Chain.ChainID {
 		r.Passed = true
 	} else {
+		r.FailureClass = ClassChainIDMismatch
 		r.Evidence = fmt.Sprintf("got=%s want=%s", probe.Network, probe.Chain.ChainID)
 	}
 	return r
