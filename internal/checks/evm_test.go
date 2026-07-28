@@ -27,7 +27,7 @@ func evmChainIDHandler(chainIDHex string) http.HandlerFunc {
 func probeEVM(t *testing.T, srv *httptest.Server, chain registry.Chain) checks.EVMProbe {
 	t.Helper()
 	ep := registry.Endpoint{Address: srv.URL, Provider: "test"}
-	client := checks.NewHTTPClient(5 * time.Second)
+	client := checks.NewHTTPClient(5*time.Second, "")
 	return checks.ProbeEVMEndpoint(context.Background(), client, chain, ep)
 }
 
@@ -37,7 +37,7 @@ func probeDeadEVM(t *testing.T) checks.EVMProbe {
 	srv.Close()
 	chain := registry.Chain{Name: "testchain", ChainID: "9001", ChainType: "eip155"}
 	ep := registry.Endpoint{Address: srv.URL}
-	client := checks.NewHTTPClient(2 * time.Second)
+	client := checks.NewHTTPClient(2*time.Second, "")
 	return checks.ProbeEVMEndpoint(context.Background(), client, chain, ep)
 }
 

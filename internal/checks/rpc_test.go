@@ -35,7 +35,7 @@ func probeChain(t *testing.T, srv *httptest.Server) checks.EndpointProbe {
 		ChainID: "testchain-1",
 		RPCs:    []registry.Endpoint{{Address: srv.URL, Provider: "test"}},
 	}
-	client := checks.NewHTTPClient(5 * time.Second)
+	client := checks.NewHTTPClient(5*time.Second, "")
 	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
 }
 
@@ -44,7 +44,7 @@ func probeDeadServer(t *testing.T) checks.EndpointProbe {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	srv.Close()
 	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", RPCs: []registry.Endpoint{{Address: srv.URL}}}
-	client := checks.NewHTTPClient(2 * time.Second)
+	client := checks.NewHTTPClient(2*time.Second, "")
 	return checks.ProbeEndpoint(context.Background(), client, chain, chain.RPCs[0])
 }
 

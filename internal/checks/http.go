@@ -11,8 +11,33 @@ import (
 	"unicode"
 )
 
-func NewHTTPClient(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout}
+// NewHTTPClient returns the shared probe client. A non-empty ua is set as the User-Agent on
+// every request at the transport level — one place instead of every call site. Identifying
+// ourselves is scanner manners: it gives operators a specific string to allowlist (or contact)
+// instead of a generic Go client to block, and it cannot change any finding — the User-Agent
+// hypothesis was tested against the largest suspect providers and disconfirmed.
+//
+// The gRPC and WSS probes do not go through this client; they carry the UA themselves.
+func NewHTTPClient(timeout time.Duration, ua string) *http.Client {
+	c := &http.Client{Timeout: timeout}
+	if ua != "" {
+		c.Transport = uaTransport{base: http.DefaultTransport, ua: ua}
+	}
+	return c
+}
+
+type uaTransport struct {
+	base http.RoundTripper
+	ua   string
+}
+
+// RoundTrip clones the request before mutating it, as the RoundTripper contract requires.
+func (t uaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("User-Agent", t.ua)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // maxBodyPrefix bounds how much of a non-2xx response body is retained: enough for a short

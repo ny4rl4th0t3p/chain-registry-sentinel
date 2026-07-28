@@ -44,7 +44,7 @@ func probeGRPCWeb(t *testing.T, serverURL string) checks.GRPCWebProbe {
 		ChainID:          "testchain-1",
 		GRPCWebEndpoints: []registry.Endpoint{{Address: serverURL, Provider: "test"}},
 	}
-	client := checks.NewHTTPClient(5 * time.Second)
+	client := checks.NewHTTPClient(5*time.Second, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return checks.ProbeGRPCWebEndpoint(ctx, client, chain, chain.GRPCWebEndpoints[0])
@@ -55,7 +55,7 @@ func probeDeadGRPCWeb(t *testing.T) checks.GRPCWebProbe {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	srv.Close()
 	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", GRPCWebEndpoints: []registry.Endpoint{{Address: srv.URL}}}
-	client := checks.NewHTTPClient(2 * time.Second)
+	client := checks.NewHTTPClient(2*time.Second, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return checks.ProbeGRPCWebEndpoint(ctx, client, chain, chain.GRPCWebEndpoints[0])

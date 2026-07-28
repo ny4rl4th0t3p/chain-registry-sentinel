@@ -48,7 +48,7 @@ func probeWSS(t *testing.T, serverURL string) checks.WSSProbe {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return checks.ProbeWSSEndpoint(ctx, chain, chain.WSSEndpoints[0])
+	return checks.ProbeWSSEndpoint(ctx, chain, chain.WSSEndpoints[0], "")
 }
 
 func probeDeadWSS(t *testing.T) checks.WSSProbe {
@@ -67,7 +67,7 @@ func probeDeadWSS(t *testing.T) checks.WSSProbe {
 		ChainID:      "testchain-1",
 		WSSEndpoints: []registry.Endpoint{{Address: "ws://" + addr}},
 	}
-	return checks.ProbeWSSEndpoint(ctx, chain, chain.WSSEndpoints[0])
+	return checks.ProbeWSSEndpoint(ctx, chain, chain.WSSEndpoints[0], "")
 }
 
 func TestWSSLiveness_Pass(t *testing.T) {

@@ -54,7 +54,10 @@ const getNodeInfoMethod = "/cosmos.base.tendermint.v1beta1.Service/GetNodeInfo"
 
 // ProbeGRPCEndpoint calls GetNodeInfo on a Cosmos SDK gRPC endpoint.
 // The method has been stable since Cosmos SDK 0.40 (Stargate, Jan 2021).
-func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) (probe GRPCProbe) {
+//
+// ua, when non-empty, is set via grpc.WithUserAgent; grpc-go appends its own "grpc-go/x.y"
+// suffix, which is expected.
+func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint, ua string) (probe GRPCProbe) {
 	probe = GRPCProbe{Chain: chain, Endpoint: ep}
 	// Named return plus defer so latency is recorded on every exit path, including errors.
 	start := time.Now()
@@ -73,10 +76,14 @@ func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.En
 		creds = insecure.NewCredentials()
 	}
 
-	conn, err := grpc.NewClient(target,
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithDefaultCallOptions(grpc.ForceCodec(rawCodec{})),
-	)
+	}
+	if ua != "" {
+		opts = append(opts, grpc.WithUserAgent(ua))
+	}
+	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		probe.FetchErr = fmt.Errorf("dial: %w", err)
 		return probe

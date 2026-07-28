@@ -105,7 +105,7 @@ func probeGRPC(t *testing.T, addr string) checks.GRPCProbe {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
+	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0], "")
 }
 
 func probeDeadGRPC(t *testing.T) checks.GRPCProbe {
@@ -120,7 +120,7 @@ func probeDeadGRPC(t *testing.T) checks.GRPCProbe {
 	addr := lis.Addr().String()
 	lis.Close()
 	chain := registry.Chain{Name: "testchain", ChainID: "testchain-1", GRPCEndpoints: []registry.Endpoint{{Address: addr}}}
-	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
+	return checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0], "")
 }
 
 func TestGRPCLiveness_Pass(t *testing.T) {
@@ -190,7 +190,7 @@ func TestProbeGRPCEndpoint_BareHostname(t *testing.T) {
 		ChainID:       "testchain-1",
 		GRPCEndpoints: []registry.Endpoint{{Address: "127.0.0.1"}},
 	}
-	probe := checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0])
+	probe := checks.ProbeGRPCEndpoint(ctx, chain, chain.GRPCEndpoints[0], "")
 	if probe.FetchErr == nil {
 		t.Fatal("want error for unreachable endpoint")
 	}

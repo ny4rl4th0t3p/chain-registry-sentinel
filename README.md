@@ -279,6 +279,10 @@ counts — should be quoted. Fix the machine's DNS or routing, or lower `concurr
 `--vantage` label. The label exists so runs from different networks can be told apart later — a home connection and a
 datacenter are different measurements of the same registry.
 
+Probes identify themselves: the default User-Agent is `chain-registry-sentinel/<version>` with a
+link to this repository, so endpoint operators see a specific string to allowlist (or a place to
+complain) instead of a generic Go client. Override with `--user-agent`.
+
 `--from <file>` renders the report from one previously saved run instead of probing. It takes the file, not its
 directory, on purpose: the report should be traceable to exactly one named input, never to whichever file an implicit
 rule happened to pick. A file containing more than one run (hand-concatenated) is refused rather than mixed, since

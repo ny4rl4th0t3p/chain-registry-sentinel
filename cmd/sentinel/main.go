@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -45,6 +46,7 @@ type CLI struct {
 	PRCooldownDays int              `help:"Days between PRs per chain" env:"INPUT_PR_COOLDOWN_DAYS" default:"7"`
 	Report         string           `help:"Directory to write this run's JSONL records into (one file per run)" env:"INPUT_REPORT"`
 	Vantage        string           `help:"Label stamped into every record to compare runs across networks" env:"INPUT_VANTAGE"`
+	UserAgent      string           `help:"User-Agent for probe requests (default identifies the sentinel and repo)" env:"INPUT_USER_AGENT"`
 	From           string           `help:"Render a report from a JSONL record file written by --report, instead of probing" env:"INPUT_FROM"`
 	Verbose        bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
 	Version        kong.VersionFlag `name:"version" help:"Print version and exit"`
@@ -190,8 +192,8 @@ func buildJobs(chains []registry.Chain) []job {
 	return jobs
 }
 
-func runProbe(ctx context.Context, client *http.Client, j job) []checks.Result {
-	results := probeByType(ctx, client, j)
+func runProbe(ctx context.Context, client *http.Client, j job, ua string) []checks.Result {
+	results := probeByType(ctx, client, j, ua)
 	// Stamped here rather than inside the checks: list position is registry data the probe
 	// layer never sees, and one assignment point beats six.
 	for i := range results {
@@ -200,7 +202,9 @@ func runProbe(ctx context.Context, client *http.Client, j job) []checks.Result {
 	return results
 }
 
-func probeByType(ctx context.Context, client *http.Client, j job) []checks.Result {
+// ua reaches only the gRPC and WSS probes here: the HTTP-based checks inherit it from the
+// shared client's transport.
+func probeByType(ctx context.Context, client *http.Client, j job, ua string) []checks.Result {
 	switch j.endpointType {
 	case TypeRPC:
 		probe := checks.ProbeEndpoint(ctx, client, j.chain, j.endpoint)
@@ -221,7 +225,7 @@ func probeByType(ctx context.Context, client *http.Client, j job) []checks.Resul
 			checks.NewGRPCWebChainID().Evaluate(probe),
 		}
 	case TypeGRPC:
-		probe := checks.ProbeGRPCEndpoint(ctx, j.chain, j.endpoint)
+		probe := checks.ProbeGRPCEndpoint(ctx, j.chain, j.endpoint, ua)
 		return []checks.Result{
 			checks.NewGRPCLiveness().Evaluate(probe),
 			checks.NewGRPCChainID().Evaluate(probe),
@@ -233,7 +237,7 @@ func probeByType(ctx context.Context, client *http.Client, j job) []checks.Resul
 			checks.NewEVMChainID().Evaluate(probe),
 		}
 	case TypeWSS:
-		probe := checks.ProbeWSSEndpoint(ctx, j.chain, j.endpoint)
+		probe := checks.ProbeWSSEndpoint(ctx, j.chain, j.endpoint, ua)
 		return []checks.Result{
 			checks.NewWSSLiveness().Evaluate(probe),
 			checks.NewWSSChainID().Evaluate(probe),
@@ -242,7 +246,7 @@ func probeByType(ctx context.Context, client *http.Client, j job) []checks.Resul
 	return nil
 }
 
-func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurrency int) <-chan checks.Result {
+func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurrency int, ua string) <-chan checks.Result {
 	jobCh := make(chan job, len(jobs))
 	for i := range jobs {
 		jobCh <- jobs[i]
@@ -264,7 +268,7 @@ func runWorkers(jobs []job, client *http.Client, timeout time.Duration, concurre
 				// Skipped results are forwarded too — a rate-limited endpoint is a real
 				// observation the report must count; collectResults keeps them out of the
 				// stats, and updateState already filters them from streaks.
-				probes := runProbe(ctx, client, j)
+				probes := runProbe(ctx, client, j, ua)
 				for i := range probes {
 					resultCh <- probes[i]
 				}
@@ -426,7 +430,13 @@ func missingFromRegistry(filter []string, chains []registry.Chain) []string {
 // prints the aggregate report. The report always prints — it is the product, not an option;
 // --report only controls whether the underlying records are kept for later --from analysis.
 func emitReport(cli CLI, results []checks.Result, stateMap map[string]state.ChainState, now time.Time) {
-	records := report.Build(results, stateMap, now, cli.Vantage)
+	records := report.Build(results, stateMap, report.RunMeta{
+		TS:             now,
+		Vantage:        cli.Vantage,
+		RegistryCommit: registryCommit(cli.Registry),
+		Concurrency:    cli.Concurrency,
+		Timeout:        cli.Timeout,
+	})
 	if len(records) == 0 {
 		return
 	}
@@ -443,6 +453,22 @@ func emitReport(cli CLI, results []checks.Result, stateMap map[string]state.Chai
 	report.Render(os.Stdout, records)
 }
 
+// registryCommit resolves the git commit of the registry checkout being probed, so every record
+// states which registry state it measured. Best-effort by design: a non-git registry directory
+// or a machine without git yields "", and the field is simply omitted — an earlier canonical
+// run's commit was lost exactly because nothing recorded it, but failing the run over
+// provenance metadata would be backwards.
+func registryCommit(registryPath string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", registryPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		slog.Debug("could not resolve registry commit", "err", err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // renderFromFile is the offline mode: render the report from one previously written JSONL
 // record file — no probing, no registry, no network. The file is named explicitly rather than
 // discovered in a directory, so what the report describes is never ambiguous.
@@ -455,6 +481,10 @@ func renderFromFile(path string) {
 	fmt.Printf("report for run %s, vantage %s, %d records (%s)\n",
 		records[0].RunTS.UTC().Format(time.RFC3339), orDefault(records[0].Vantage, "(no vantage)"),
 		len(records), path)
+	if records[0].RegistryCommit != "" {
+		fmt.Printf("registry commit %s, probed at concurrency %d, timeout %dms\n",
+			records[0].RegistryCommit, records[0].Concurrency, records[0].TimeoutMS)
+	}
 	report.Render(os.Stdout, records)
 }
 
@@ -639,6 +669,7 @@ func preflight(
 	client *http.Client,
 	timeout time.Duration,
 	concurrency int,
+	ua string,
 	flagged map[string][]github.FlaggedEndpoint,
 ) map[string]map[string]bool {
 	flaggedAddrs := make(map[string]map[string]struct{})
@@ -661,7 +692,7 @@ func preflight(
 	if len(filtered) == 0 {
 		return nil
 	}
-	resultCh := runWorkers(filtered, client, timeout, min(len(filtered), concurrency))
+	resultCh := runWorkers(filtered, client, timeout, min(len(filtered), concurrency), ua)
 	passed := make(map[string]map[string]bool)
 	for r := range resultCh {
 		if !strings.HasSuffix(r.Check, "_liveness") || r.Skipped {
@@ -834,7 +865,7 @@ func maybeOpenPRs(
 	if len(flagged) == 0 {
 		return
 	}
-	passed := preflight(jobs, probeClient, cli.Timeout, cli.Concurrency, flagged)
+	passed := preflight(jobs, probeClient, cli.Timeout, cli.Concurrency, cli.UserAgent, flagged)
 	applyPreflightResults(stateMap, flagged, passed, now)
 	ctx := context.Background()
 	var ghClient *github.Client
@@ -994,6 +1025,12 @@ func main() {
 		kong.Vars{"version": Version},
 	)
 
+	// Computed here rather than as a kong default because it embeds the build version.
+	if cli.UserAgent == "" {
+		cli.UserAgent = "chain-registry-sentinel/" + Version +
+			" (+https://github.com/ny4rl4th0t3p/chain-registry-sentinel)"
+	}
+
 	logLevel := slog.LevelWarn
 	if cli.Verbose {
 		logLevel = slog.LevelDebug
@@ -1016,7 +1053,7 @@ func main() {
 	chains, missingChains := loadFilteredChains(cli)
 
 	jobs := buildJobs(chains)
-	client := checks.NewHTTPClient(cli.Timeout)
+	client := checks.NewHTTPClient(cli.Timeout, cli.UserAgent)
 
 	var stateMap map[string]state.ChainState
 	if cli.StatePath != "" {
@@ -1028,7 +1065,7 @@ func main() {
 		}
 	}
 
-	resultCh := runWorkers(jobs, client, cli.Timeout, cli.Concurrency)
+	resultCh := runWorkers(jobs, client, cli.Timeout, cli.Concurrency, cli.UserAgent)
 	perChain, keys, results := collectResults(resultCh, cli.Verbose)
 
 	now := time.Now().UTC()

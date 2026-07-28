@@ -114,7 +114,7 @@ func TestBuildFiltersSortsAndJoinsStreaks(t *testing.T) {
 			state.EndpointKey("rpc_liveness", "https://rpc-1.gonecorp.example"): {ConsecutiveFailures: 7},
 		}},
 	}
-	records := Build(fixtureResults(), stateMap, runTS, "test")
+	records := Build(fixtureResults(), stateMap, RunMeta{TS: runTS, Vantage: "test"})
 
 	// 14 results, minus the skipped chain-ID pipeline artifact; the skipped-but-classified
 	// rate-limited record stays.
@@ -153,7 +153,16 @@ func TestBuildFiltersSortsAndJoinsStreaks(t *testing.T) {
 
 func TestWriteRunLoadFileRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	records := Build(fixtureResults(), nil, runTS, "vantage/one")
+	records := Build(fixtureResults(), nil, RunMeta{
+		TS: runTS, Vantage: "vantage/one",
+		RegistryCommit: "abc1234", Concurrency: 16, Timeout: 60 * time.Second,
+	})
+
+	// Asserted before the round trip: DeepEqual alone would pass if Build never stamped the
+	// provenance fields, since both sides would be equally empty.
+	if records[0].RegistryCommit != "abc1234" || records[0].Concurrency != 16 || records[0].TimeoutMS != 60000 {
+		t.Fatalf("run provenance not stamped into records: %+v", records[0])
+	}
 
 	path, err := WriteRun(dir, records)
 	if err != nil {
@@ -176,8 +185,8 @@ func TestWriteRunLoadFileRoundTrip(t *testing.T) {
 // rendering the mix would double-count every endpoint. LoadFile must refuse, not pick.
 func TestLoadFileRejectsMixedRuns(t *testing.T) {
 	dir := t.TempDir()
-	older := Build(fixtureResults(), nil, runTS.Add(-24*time.Hour), "old")
-	newer := Build(fixtureResults(), nil, runTS, "new")
+	older := Build(fixtureResults(), nil, RunMeta{TS: runTS.Add(-24 * time.Hour), Vantage: "old"})
+	newer := Build(fixtureResults(), nil, RunMeta{TS: runTS, Vantage: "new"})
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -200,7 +209,7 @@ func TestLoadFileRejectsMixedRuns(t *testing.T) {
 
 func TestRenderComputesTheHeadlineNumbers(t *testing.T) {
 	var buf bytes.Buffer
-	Render(&buf, Build(fixtureResults(), nil, runTS, "test"))
+	Render(&buf, Build(fixtureResults(), nil, RunMeta{TS: runTS, Vantage: "test"}))
 	out := buf.String()
 
 	// 11 measured endpoints: 3 live, 8 dead. Structural = 3 dns + 4 http_404; timeout is
@@ -271,7 +280,7 @@ func TestRenderNamesChainsWithoutCoreEndpoints(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	Render(&buf, Build(results, nil, runTS, "test"))
+	Render(&buf, Build(results, nil, RunMeta{TS: runTS, Vantage: "test"}))
 	out := buf.String()
 
 	if !strings.Contains(out, "1 chain(s) list no RPC, REST or EVM endpoint at all") {
@@ -290,7 +299,7 @@ func TestRenderSkipsFirstListedWithoutOrderData(t *testing.T) {
 		results[i].EndpointOrder = 0
 	}
 	var buf bytes.Buffer
-	Render(&buf, Build(results, nil, runTS, "test"))
+	Render(&buf, Build(results, nil, RunMeta{TS: runTS, Vantage: "test"}))
 	if strings.Contains(buf.String(), "first-listed endpoint") {
 		t.Error("first-listed section rendered from records that predate the order field")
 	}
@@ -307,7 +316,7 @@ func TestRenderWarnsOnUnhealthyVantage(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	Render(&buf, Build(results, nil, runTS, "test"))
+	Render(&buf, Build(results, nil, RunMeta{TS: runTS, Vantage: "test"}))
 	out := buf.String()
 
 	if !strings.Contains(out, "WARNING: this vantage looks unhealthy") {

@@ -32,7 +32,9 @@ const wssStatusRequest = `{"jsonrpc":"2.0","method":"status","params":{},"id":1}
 // request to retrieve the chain ID. A dial failure with no HTTP response is a
 // network error; a server that rejects the upgrade or doesn't speak the
 // Tendermint protocol is a wrong-response failure.
-func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint) (probe WSSProbe) {
+// ua, when non-empty, is sent as the User-Agent on the upgrade request — the dialer bypasses
+// the shared HTTP client, so the identification has to travel explicitly.
+func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.Endpoint, ua string) (probe WSSProbe) {
 	probe = WSSProbe{Chain: chain, Endpoint: ep}
 	// Named return plus defer so latency is recorded on every exit path, including errors.
 	start := time.Now()
@@ -44,7 +46,11 @@ func ProbeWSSEndpoint(ctx context.Context, chain registry.Chain, ep registry.End
 	}
 
 	dialer := websocket.Dialer{HandshakeTimeout: timeout}
-	conn, resp, err := dialer.DialContext(ctx, ep.Address, nil)
+	var header http.Header
+	if ua != "" {
+		header = http.Header{"User-Agent": []string{ua}}
+	}
+	conn, resp, err := dialer.DialContext(ctx, ep.Address, header)
 	if resp != nil {
 		defer resp.Body.Close()
 		probe.StatusCode = resp.StatusCode

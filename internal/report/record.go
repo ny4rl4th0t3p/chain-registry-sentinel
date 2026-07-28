@@ -25,6 +25,14 @@ type Record struct {
 	RunTS   time.Time `json:"run_ts"`
 	Vantage string    `json:"vantage,omitempty"`
 
+	// Run provenance, repeated on every record so a JSONL file is reproducible on its own:
+	// which registry state was probed and how. Learned the hard way — earlier runs recorded
+	// neither, and their registry commit is unrecoverable. The per-line redundancy is the
+	// price of records that never depend on a sidecar file, and compresses to nothing.
+	RegistryCommit string `json:"registry_commit,omitempty"`
+	Concurrency    int    `json:"probe_concurrency,omitempty"`
+	TimeoutMS      int64  `json:"probe_timeout_ms,omitempty"`
+
 	Chain     string `json:"chain"`
 	ChainID   string `json:"chain_id"`
 	ChainType string `json:"chain_type"`
@@ -54,6 +62,16 @@ type Record struct {
 // done in. Chain-ID results ride along for correctness findings but never count as endpoints.
 func (r Record) liveness() bool { return strings.HasSuffix(r.Check, "_liveness") }
 
+// RunMeta identifies one run: when and from where it probed, which registry state, and with
+// what settings. Everything in it is stamped into every record.
+type RunMeta struct {
+	TS             time.Time
+	Vantage        string
+	RegistryCommit string // "" when the registry directory is not a git checkout
+	Concurrency    int
+	Timeout        time.Duration
+}
+
 // Build converts one run's results into records.
 //
 // Two kinds of skipped results reach this point and only one belongs in the dataset: a
@@ -63,12 +81,7 @@ func (r Record) liveness() bool { return strings.HasSuffix(r.Check, "_liveness")
 // therefore dropped.
 //
 // stateMap may be nil (stateless run); streaks then report as zero.
-func Build(
-	results []checks.Result,
-	stateMap map[string]state.ChainState,
-	runTS time.Time,
-	vantage string,
-) []Record {
+func Build(results []checks.Result, stateMap map[string]state.ChainState, meta RunMeta) []Record {
 	records := make([]Record, 0, len(results))
 	for i := range results {
 		r := &results[i]
@@ -77,25 +90,28 @@ func Build(
 		}
 		host := hostOf(r.Endpoint)
 		rec := Record{
-			RunTS:        runTS,
-			Vantage:      vantage,
-			Chain:        r.Chain,
-			ChainID:      r.ChainID,
-			ChainType:    r.ChainType,
-			Check:        r.Check,
-			Endpoint:     r.Endpoint,
-			Host:         host,
-			Domain:       domainOf(host),
-			Provider:     r.Provider,
-			Order:        r.EndpointOrder,
-			Passed:       r.Passed,
-			Skipped:      r.Skipped,
-			FailureClass: r.FailureClass,
-			HTTPStatus:   r.HTTPStatus,
-			LatencyMS:    r.Latency.Milliseconds(),
-			Evidence:     r.Evidence,
-			CatchingUp:   r.CatchingUp,
-			TxIndex:      r.TxIndex,
+			RunTS:          meta.TS,
+			Vantage:        meta.Vantage,
+			RegistryCommit: meta.RegistryCommit,
+			Concurrency:    meta.Concurrency,
+			TimeoutMS:      meta.Timeout.Milliseconds(),
+			Chain:          r.Chain,
+			ChainID:        r.ChainID,
+			ChainType:      r.ChainType,
+			Check:          r.Check,
+			Endpoint:       r.Endpoint,
+			Host:           host,
+			Domain:         domainOf(host),
+			Provider:       r.Provider,
+			Order:          r.EndpointOrder,
+			Passed:         r.Passed,
+			Skipped:        r.Skipped,
+			FailureClass:   r.FailureClass,
+			HTTPStatus:     r.HTTPStatus,
+			LatencyMS:      r.Latency.Milliseconds(),
+			Evidence:       r.Evidence,
+			CatchingUp:     r.CatchingUp,
+			TxIndex:        r.TxIndex,
 		}
 		if cs, ok := stateMap[r.Chain]; ok {
 			rec.Streak = cs.Endpoints[state.EndpointKey(r.Check, r.Endpoint)].ConsecutiveFailures
