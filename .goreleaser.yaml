@@ -1,0 +1,70 @@
+version: 2
+
+project_name: chain-registry-sentinel
+
+builds:
+  - id: sentinel
+    main: ./cmd/sentinel
+    binary: sentinel
+    # The module path is bare `chain-registry-sentinel` and Version lives in package main,
+    # so the -X target is `main.Version` — capital V, matching the Makefile. GoReleaser's
+    # own default target is `main.version` (lowercase); relying on it would silently ship
+    # a binary reporting "dev".
+    #
+    # `.Tag` (v0.5.2), not `.Version` (0.5.2, v-stripped): the stamped version must agree
+    # with the published image, the git tag, and `make build`'s `git describe` output. Only
+    # the archive filename below keeps the v-less form, where it is conventional.
+    ldflags:
+      - -X main.Version={{ .Tag }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # Single build, and tar.gz is already the default format, so neither an id filter nor an
+  # explicit format is needed — both spellings were renamed in GoReleaser v2 and omitting
+  # them sidesteps the deprecation entirely.
+  - id: archive
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  # Regexps are matched against the whole `<abbrev-hash> <subject>` changelog entry, so each must
+  # skip the leading hash with `^.*?` before the conventional-commit type. Anchoring at `^feat`
+  # never matches (the line starts with the hash) and everything falls through to "Other".
+  filters:
+    exclude:
+      - '^.*?chore(\(.+?\))?!?:'
+      - '^.*?ci(\(.+?\))?!?:'
+      - '^.*?Merge (pull request|branch)'
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+?\))?!?:'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\(.+?\))?!?:'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+?\))?!?:'
+      order: 2
+    - title: Refactors
+      regexp: '^.*?refactor(\(.+?\))?!?:'
+      order: 3
+    - title: Documentation
+      regexp: '^.*?docs(\(.+?\))?!?:'
+      order: 4
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: ny4rl4th0t3p
+    name: chain-registry-sentinel
