@@ -1,0 +1,88 @@
+name: Vantage report
+
+# Manual-only: probe the full registry from a GitHub-hosted runner and upload the JSONL
+# records as an artifact. Exists to answer one question — do the failure numbers hold from a
+# datacenter vantage, or does the household network path they were measured from color them?
+# Compare the artifact against the canonical local run with `sentinel --from`.
+#
+# Deliberately not part of action.yml: this runs the binary directly so the packaging story
+# stays untouched. Settings mirror the canonical run (concurrency 16, timeout 60s) — the
+# comparison is only valid if the method matches.
+#
+# No PR paths are reachable: no github-token is passed (the PR guard requires one) and no
+# state-path is set (hash PRs return early without state).
+on:
+  workflow_dispatch:
+    inputs:
+      registry-ref:
+        description: >-
+          chain-registry commit SHA to probe (mandatory). Pin the same commit the local run
+          probed — the registry changes daily, and comparing different registry states
+          confounds vantage effects with drift. This is a manual experiment: the operator
+          states exactly what is measured, nothing is defaulted.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  vantage-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45 # the canonical run took ~12m at these settings; headroom, not expectation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build sentinel
+        run: go build -o sentinel ./cmd/sentinel/
+
+      - name: Fetch pinned chain-registry commit
+        # The fork, not upstream: it is the repository the sentinel's own runs and PRs operate
+        # on, and the ref being fetched is guaranteed reachable there. The SHA is fetched
+        # directly rather than cloned-and-checked-out — GitHub serves arbitrary reachable
+        # commits to fetch, so this stays a shallow, single-commit download.
+        #
+        # The empty-check backs up the input's required flag: the UI enforces it, API dispatch
+        # does not necessarily. A run that silently measured "whatever HEAD was" would produce
+        # an artifact nobody can compare against anything.
+        run: |
+          if [ -z "${{ inputs.registry-ref }}" ]; then
+            echo "::error::registry-ref is mandatory: state the exact commit this run measures"
+            exit 1
+          fi
+          git init -q /tmp/chain-registry
+          git -C /tmp/chain-registry remote add origin https://github.com/ny4rl4th0t3p/chain-registry.git
+          git -C /tmp/chain-registry fetch --depth 1 origin "${{ inputs.registry-ref }}"
+          git -C /tmp/chain-registry checkout -q FETCH_HEAD
+
+      - name: Record run metadata
+        # The records do not yet carry the registry commit or probe settings, so a run is not
+        # reproducible from the JSONL alone — this file rides along in the artifact until the
+        # record schema learns to carry it itself.
+        run: |
+          mkdir -p records
+          {
+            echo "registry_commit: $(git -C /tmp/chain-registry rev-parse HEAD)"
+            echo "concurrency: 16"
+            echo "timeout: 60s"
+            echo "runner: ${{ runner.os }} github-hosted"
+            echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > records/run-metadata.txt
+
+      - name: Probe and report
+        run: |
+          ./sentinel \
+            --registry /tmp/chain-registry \
+            --concurrency 16 \
+            --timeout 60s \
+            --report records \
+            --vantage github-runner
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vantage-report
+          path: records/
+          retention-days: 90
