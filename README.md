@@ -98,8 +98,8 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
 |--------------------|----------|--------------------------------------------------------------------------------------------------|
 | `registry`         | `.`      | Path to a local chain-registry clone, relative to the workspace.                                 |
 | `chains`           | `all`    | Comma-separated chain names to check, or `all`.                                                  |
-| `timeout`          | `30s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
-| `concurrency`      | `250`    | Maximum simultaneous endpoint probes.                                                            |
+| `timeout`          | `60s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
+| `concurrency`      | `16`     | Maximum simultaneous endpoint probes. See the DNS note below before raising it.                  |
 | `state-path`       | _(none)_ | Directory for per-chain state files. Use when managing persistence externally.                   |
 | `reset-state`      | `false`  | Start unreadable state files from scratch instead of failing the step.                           |
 | `state-branch`     | _(none)_ | Branch to persist state automatically (created on first push).                                   |
@@ -120,6 +120,13 @@ are skipped. Names not found in the registry are warned about at the end of the 
 including the IBC denom hash check.
 
 **`concurrency`** — applies to endpoint probes only; hash checks are local and run synchronously after probing.
+The default is deliberately conservative: every probe fires A and AAAA DNS lookups, and a large burst overruns
+dnsmasq-class forwarders (default limit: 150 in-flight queries) — home routers, container stub resolvers, VM NAT
+chains. An overloaded resolver does not just slow the run down, it corrupts the results: dropped lookups surface as
+DNS failures and even false NXDOMAINs for healthy endpoints. In one measured case, concurrency 250 behind a VM's
+dnsmasq halved the number of endpoints reported live. Raise this only on infrastructure whose resolver chain you
+trust (measured fine on GitHub-hosted runners), and treat a nonzero `dns_failure`/`vantage_no_route` count in the
+report as the signal to lower it.
 
 **`state-path`** — holds one JSON state file per chain (failure streaks, PR timestamps). **If neither `state-path` nor
 `state-branch` is set, there is no state**: endpoints are probed and problems are reported in the log, but nothing is
@@ -243,6 +250,41 @@ registry path, no chains found, or state files that exist but cannot be parsed.
 Unreadable state aborts rather than starting those chains from scratch, because a silent reset discards failure streaks
 that take days to rebuild while the run still finishes normally. Fix or delete the offending files, or pass
 `--reset-state` to accept the loss deliberately.
+
+---
+
+## The report
+
+Every run ends with an aggregate report on stdout: failure classes split into *structural* (provably broken regardless
+of how the probe behaved — DNS gone, TLS broken, the server itself answering that nothing is there) versus *ambiguous*
+(timeouts, throttling, blocks — anything an aggressive or badly-networked prober could have caused itself), a
+per-domain live/dead table, a remedy taxonomy for fully dead domains, chain reachability, and node quality. No
+post-processing needed — run it, read it.
+
+If the report opens with a **vantage health warning**, believe it: the failures are dominated by classes that describe
+the probing machine (a failing resolver, a missing IPv6 route), and nothing in that run — including the structural
+counts — should be quoted. Fix the machine's DNS or routing, or lower `concurrency`, and re-run.
+
+### Records: keep a run, re-analyze it later
+
+```bash
+# probe and keep one JSONL file per run (per-endpoint records: class, status, latency, evidence...)
+./sentinel --registry /path/to/chain-registry --report ./records --vantage home
+
+# re-render the report from a saved run — no probing, no registry, no network
+./sentinel --from ./records/20260728T113530Z-home.jsonl
+```
+
+`--report <dir>` writes the run's per-endpoint records as one JSONL file, named after the run's UTC timestamp and the
+`--vantage` label. The label exists so runs from different networks can be told apart later — a home connection and a
+datacenter are different measurements of the same registry.
+
+`--from <file>` renders the report from one previously saved run instead of probing. It takes the file, not its
+directory, on purpose: the report should be traceable to exactly one named input, never to whichever file an implicit
+rule happened to pick. A file containing more than one run (hand-concatenated) is refused rather than mixed, since
+mixing runs would double-count endpoints. Records are plain JSONL: every record carries both the machine-derived
+`failure_class` and the raw `evidence` it was derived from, so anything beyond the built-in report — and any future
+reclassification — is one `jq` away.
 
 ---
 

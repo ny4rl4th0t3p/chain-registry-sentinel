@@ -94,6 +94,13 @@ func TestClassify(t *testing.T) {
 			err:  wrapped(os.NewSyscallError("connect", syscall.EHOSTUNREACH)),
 			want: ClassNetUnreachable,
 		},
+		{
+			// ENETUNREACH is the prober's own routing table (classically a v6 dial from a
+			// v4-only host), not the endpoint — it must never count as structural.
+			name: "network unreachable is the vantage, not the endpoint",
+			err:  wrapped(os.NewSyscallError("connect", syscall.ENETUNREACH)),
+			want: ClassVantageNoRoute,
+		},
 
 		// Timeouts. context.DeadlineExceeded satisfies net.Error with Timeout() == true.
 		{name: "timeout", err: wrapped(context.DeadlineExceeded), want: ClassTimeout},
@@ -214,6 +221,9 @@ func TestFailureClassIsStructural(t *testing.T) {
 	ambiguous := []FailureClass{
 		ClassTimeout, ClassHTTP403, ClassHTTP429, ClassConnReset,
 		ClassGRPCPermission, ClassTLSOther, ClassNone,
+		// Proven vantage-side by the 2026-07-28 VM run: a flaky local resolver and a missing
+		// IPv6 route produced these en masse for endpoints that were perfectly healthy.
+		ClassDNSFailure, ClassVantageNoRoute,
 	}
 	for _, c := range ambiguous {
 		if c.IsStructural() {

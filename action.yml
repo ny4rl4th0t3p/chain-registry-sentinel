@@ -14,10 +14,10 @@ inputs:
     default: 'all'
   timeout:
     description: 'HTTP/gRPC timeout per request (e.g. 30s, 1m)'
-    default: '30s'
+    default: '60s'
   concurrency:
-    description: 'Maximum simultaneous endpoint probes'
-    default: '250'
+    description: 'Maximum simultaneous endpoint probes. Conservative by default; raise only if the DNS resolver chain can absorb the burst'
+    default: '16'
   state-path:
     description: 'Directory for per-chain state files (enables failure tracking across runs)'
   reset-state:

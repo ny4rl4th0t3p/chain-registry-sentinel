@@ -9,6 +9,7 @@ import (
 type Result struct {
 	Chain      string // chain_name, used for grouping
 	ChainID    string // chain_id, used for display
+	ChainType  string // "cosmos" or "eip155"; decides which checks are meaningful for a chain
 	Check      string
 	Endpoint   string
 	Provider   string // registry-declared operator; "" when the entry omits it
@@ -35,11 +36,12 @@ type Result struct {
 // wired up in one Evaluate and forgotten in another.
 func newResult(chain registry.Chain, ep registry.Endpoint, check string) Result {
 	return Result{
-		Chain:    chain.Name,
-		ChainID:  chain.ChainID,
-		Check:    check,
-		Endpoint: ep.Address,
-		Provider: ep.Provider,
+		Chain:     chain.Name,
+		ChainID:   chain.ChainID,
+		ChainType: chain.ChainType,
+		Check:     check,
+		Endpoint:  ep.Address,
+		Provider:  ep.Provider,
 	}
 }
 

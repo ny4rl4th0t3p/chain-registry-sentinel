@@ -40,6 +40,11 @@ func TestClassifyObservedEvidence(t *testing.T) {
 		{`Get "https://rpc-orai.blockval.io/status": dial tcp 46.4.23.251:443: connect: connection refused`, 0, ClassConnRefused},
 		{`Get "https://rpc.planq.indonode.net/status": read tcp 10.69.10.65:49708->167.235.102.45:443: read: connection reset by peer`, 0, ClassConnReset},
 		{`Get "https://rpc.cosmos.dragonstake.io/status": dial tcp 141.95.202.13:443: connect: no route to host`, 0, ClassNetUnreachable},
+		// From the 2026-07-28 VM run: a v6 dial from a host with no IPv6 route, and a local
+		// systemd-resolved failing. Both are the prober's environment, not the endpoint, and
+		// polkachu measuring 14% live on that VM versus 71% on a healthy network is the proof.
+		{`Get "https://osmosis-rpc.polkachu.com/status": dial tcp [2606:4700:20::681a:551]:443: connect: network is unreachable`, 0, ClassVantageNoRoute},
+		{`Get "https://cosmos-rpc.polkachu.com/status": dial tcp: lookup cosmos-rpc.polkachu.com on 127.0.0.53:53: server misbehaving`, 0, ClassDNSFailure},
 
 		// Timeouts.
 		{`Get "https://rpc.planq.network/status": context deadline exceeded`, 0, ClassTimeout},

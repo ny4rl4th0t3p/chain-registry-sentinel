@@ -31,7 +31,6 @@ const (
 
 	// Structural: the endpoint is provably broken regardless of how the prober behaved.
 	ClassDNSNXDomain         FailureClass = "dns_nxdomain"
-	ClassDNSFailure          FailureClass = "dns_failure"
 	ClassConnRefused         FailureClass = "conn_refused"
 	ClassNetUnreachable      FailureClass = "net_unreachable"
 	ClassTLSExpired          FailureClass = "tls_expired"
@@ -46,7 +45,17 @@ const (
 	ClassMalformedAddress    FailureClass = "malformed_registry_address"
 	ClassNotServedByProvider FailureClass = "not_served_by_provider"
 
-	// Ambiguous: could be throttling, blocking, or an impatient prober.
+	// Ambiguous: could be throttling, blocking, an impatient prober — or the prober's own
+	// environment, which a VM run (2026-07-28) proved is a real population: a flaky local
+	// systemd-resolved produced 55 dns_failure ("server misbehaving"), and a machine with no
+	// IPv6 route produced 19 ENETUNREACH dials to v6 addresses. Neither said anything about
+	// the endpoints. Only NXDOMAIN is an authoritative answer about the name; a SERVFAIL
+	// indicts the resolver, and "network is unreachable" indicts the local routing table.
+	// Caveat: "authoritative" assumes a functioning resolver — the same VM was later observed
+	// returning *false* NXDOMAINs for names that resolved minutes earlier. The report warns
+	// when a run's own dns_failure/vantage_no_route counts suggest its NXDOMAINs are tainted.
+	ClassDNSFailure        FailureClass = "dns_failure"
+	ClassVantageNoRoute    FailureClass = "vantage_no_route"
 	ClassTimeout           FailureClass = "timeout"
 	ClassTLSHandshakeSlow  FailureClass = "timeout_tls_handshake"
 	ClassConnReset         FailureClass = "conn_reset"
@@ -76,7 +85,6 @@ const (
 // independently of any argument about probing aggressiveness.
 var structuralClasses = map[FailureClass]bool{
 	ClassDNSNXDomain:         true,
-	ClassDNSFailure:          true,
 	ClassConnRefused:         true,
 	ClassNetUnreachable:      true,
 	ClassTLSExpired:          true,
@@ -195,8 +203,13 @@ func classifySyscall(err error, msg string) FailureClass {
 		return ClassConnRefused
 	case errors.Is(err, syscall.ECONNRESET):
 		return ClassConnReset
-	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+	// EHOSTUNREACH is typically an ICMP answer about the destination — structural. ENETUNREACH
+	// means the prober's own routing table has no route there at all (classically: dialing an
+	// IPv6 address from a host without IPv6), which says nothing about the endpoint.
+	case errors.Is(err, syscall.EHOSTUNREACH):
 		return ClassNetUnreachable
+	case errors.Is(err, syscall.ENETUNREACH):
+		return ClassVantageNoRoute
 	}
 	// Text fallbacks, for the same reason classifyDNS needs them: grpc-go embeds the dial
 	// failure as a string inside its status message ("transport: Error while dialing: dial tcp
@@ -208,8 +221,10 @@ func classifySyscall(err error, msg string) FailureClass {
 		return ClassConnRefused
 	case strings.Contains(msg, "connection reset by peer"):
 		return ClassConnReset
-	case strings.Contains(msg, "no route to host"), strings.Contains(msg, "network is unreachable"):
+	case strings.Contains(msg, "no route to host"):
 		return ClassNetUnreachable
+	case strings.Contains(msg, "network is unreachable"):
+		return ClassVantageNoRoute
 	}
 	return ClassNone
 }
