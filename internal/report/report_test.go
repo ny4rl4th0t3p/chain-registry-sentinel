@@ -68,7 +68,7 @@ func fixtureResults() []checks.Result {
 	}
 	mismatch := fail("alivechain", "cosmos", "rpc_chain_id", "https://rpc.healthy.example", "", checks.ClassChainIDMismatch)
 
-	return []checks.Result{
+	results := []checks.Result{
 		// gonecorp.example: 3 endpoints, all NXDOMAIN, 2 chains -> "operator gone"
 		fail("deadchain", "cosmos", "rpc_liveness", "https://rpc-1.gonecorp.example", "Gonecorp", checks.ClassDNSNXDomain),
 		fail("deadchain", "cosmos", "rest_liveness", "https://rest.gonecorp.example", "Gonecorp", checks.ClassDNSNXDomain),
@@ -88,6 +88,22 @@ func fixtureResults() []checks.Result {
 		skippedChainID,
 		mismatch,
 	}
+
+	// Stamp registry order on the first-listed core endpoint of each chain, as runProbe does:
+	// deadchain and evmchain lead with a dead endpoint, alivechain and flakychain with a live
+	// one — so the first-listed metric reads 2 of 4.
+	firstListed := map[string]bool{
+		"https://rpc-1.gonecorp.example": true, // deadchain, dead
+		"https://rpc.healthy.example":    true, // alivechain, live
+		"https://rpc-1.flaky.example":    true, // flakychain, live
+		"https://evm.wrongpath.example":  true, // evmchain, dead
+	}
+	for i := range results {
+		if firstListed[results[i].Endpoint] && strings.HasSuffix(results[i].Check, "_liveness") {
+			results[i].EndpointOrder = 1
+		}
+	}
+	return results
 }
 
 var runTS = time.Date(2026, 7, 28, 10, 0, 0, 0, time.UTC)
@@ -206,6 +222,13 @@ func TestRenderComputesTheHeadlineNumbers(t *testing.T) {
 		// quality and coverage: 3 gonecorp records carry a provider, of 11 measured
 		"1 still catching up (answering but behind), 1 with tx_index off",
 		"provider field present on 27.3% of endpoint entries (1 distinct providers named)",
+		// deadchain and evmchain lead with a dead endpoint; alivechain and flakychain do not
+		"first-listed endpoint (what most tooling defaults to): dead on 2 of 4 chains (50.0%)",
+		// alivechain (2 endpoints, healthy.example) and evmchain (1, wrongpath.example) sit on
+		// one domain each; deadchain and flakychain span several
+		"2 chains depend on a single registrable domain",
+		"2 endpoint(s), all on healthy.example",
+		"1 endpoint(s), all on wrongpath.example",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q\n--- full output ---\n%s", want, out)
@@ -225,6 +248,51 @@ func TestRenderComputesTheHeadlineNumbers(t *testing.T) {
 	// The fixture's failures are all endpoint-side, so the report must not question itself.
 	if strings.Contains(out, "WARNING") {
 		t.Error("vantage warning shown for a run with no vantage-side failure classes")
+	}
+	// Every fixture chain lists at least one core endpoint, so the no-core line must not appear.
+	if strings.Contains(out, "list no RPC, REST or EVM endpoint") {
+		t.Error("no-core-endpoint line rendered although every chain has core endpoints")
+	}
+}
+
+// A chain listing only gRPC/WSS endpoints has nothing standard tooling can use, and is excluded
+// from the unreachable count (nothing core was probed). It must be named, not silently dropped —
+// idep and imversed are real occurrences in the registry.
+func TestRenderNamesChainsWithoutCoreEndpoints(t *testing.T) {
+	results := []checks.Result{
+		{
+			Chain: "grpconly", ChainID: "grpconly-1", ChainType: "cosmos",
+			Check: "grpc_liveness", Endpoint: "grpc.solo.example:443",
+			FailureClass: checks.ClassDNSNXDomain, Evidence: "no such host",
+		},
+		{
+			Chain: "normal", ChainID: "normal-1", ChainType: "cosmos",
+			Check: "rpc_liveness", Endpoint: "https://rpc.normal.example", Passed: true,
+		},
+	}
+	var buf bytes.Buffer
+	Render(&buf, Build(results, nil, runTS, "test"))
+	out := buf.String()
+
+	if !strings.Contains(out, "1 chain(s) list no RPC, REST or EVM endpoint at all") {
+		t.Errorf("missing no-core-endpoint line\n--- full output ---\n%s", out)
+	}
+	if !strings.Contains(out, "grpconly") {
+		t.Error("the no-core chain must be named")
+	}
+}
+
+// Records written before the order field existed must not produce a first-listed line at all —
+// rendering "dead on 0 of 0 chains" from data that simply lacks the field would be a lie.
+func TestRenderSkipsFirstListedWithoutOrderData(t *testing.T) {
+	results := fixtureResults()
+	for i := range results {
+		results[i].EndpointOrder = 0
+	}
+	var buf bytes.Buffer
+	Render(&buf, Build(results, nil, runTS, "test"))
+	if strings.Contains(buf.String(), "first-listed endpoint") {
+		t.Error("first-listed section rendered from records that predate the order field")
 	}
 }
 

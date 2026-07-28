@@ -29,6 +29,13 @@ type Result struct {
 	// its removal because it is behind would be wrong. Reporting only.
 	CatchingUp bool   // sync_info.catching_up; false when the field is absent
 	TxIndex    string // node_info.other.tx_index: "on", "off", or "" when absent
+
+	// EndpointOrder is the 1-based position of the endpoint within its type's list in
+	// chain.json, stamped by the caller after Evaluate rather than set here: position is
+	// registry data, not probe data, and the probe layer never sees the surrounding list.
+	// 0 means unknown. It matters because most client tooling simply takes the first entry,
+	// so "is the first-listed endpoint dead" maps directly to user impact.
+	EndpointOrder int
 }
 
 // newResult seeds a Result from the registry entry under test. Centralized so Provider —

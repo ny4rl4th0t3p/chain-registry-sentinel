@@ -34,6 +34,11 @@ type Record struct {
 	Domain    string `json:"domain"`
 	Provider  string `json:"provider,omitempty"`
 
+	// Order is the endpoint's 1-based position within its type's list in chain.json; 0 in
+	// records written before the field existed. Most client tooling takes the first entry, so
+	// order 1 is the endpoint users actually hit.
+	Order int `json:"order,omitempty"`
+
 	Passed       bool                `json:"passed"`
 	Skipped      bool                `json:"skipped,omitempty"`
 	FailureClass checks.FailureClass `json:"failure_class,omitempty"`
@@ -82,6 +87,7 @@ func Build(
 			Host:         host,
 			Domain:       domainOf(host),
 			Provider:     r.Provider,
+			Order:        r.EndpointOrder,
 			Passed:       r.Passed,
 			Skipped:      r.Skipped,
 			FailureClass: r.FailureClass,

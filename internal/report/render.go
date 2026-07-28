@@ -55,6 +55,13 @@ func (d *domainAgg) dominant() (class checks.FailureClass, count int) {
 
 type chainAgg struct {
 	coreTotal, coreLive int
+	// First-listed core endpoint (order 1): what a user gets when their tooling takes the
+	// first entry, which most does. hasFirst distinguishes "first endpoint passed/failed"
+	// from "records predate the order field".
+	hasFirst, firstDead bool
+	// endpoints per registrable domain, liveness checks only — a chain whose endpoints all
+	// live on one domain is one operator decision away from unreachable.
+	domains map[string]int
 }
 
 type aggregates struct {
@@ -114,15 +121,22 @@ func aggregate(records []Record) *aggregates {
 		d.total++
 		d.chains[r.Chain] = struct{}{}
 
+		c := a.chains[r.Chain]
+		if c == nil {
+			c = &chainAgg{domains: map[string]int{}}
+			a.chains[r.Chain] = c
+		}
+		c.domains[r.Domain]++
 		if coreCheck(r.Check) {
-			c := a.chains[r.Chain]
-			if c == nil {
-				c = &chainAgg{}
-				a.chains[r.Chain] = c
-			}
 			c.coreTotal++
 			if r.Passed {
 				c.coreLive++
+			}
+			// The entry a user's tooling hits by default: the first-listed RPC (EVM JSON-RPC
+			// for eip155 chains). REST order matters less; nothing defaults to the Nth entry.
+			if r.Order == 1 && (r.Check == "rpc_liveness" || r.Check == "evm_liveness") {
+				c.hasFirst = true
+				c.firstDead = !r.Passed
 			}
 		}
 
@@ -332,21 +346,85 @@ func renderChains(w io.Writer, a *aggregates) {
 	section(w, "Chain reachability")
 	if len(unreachable) == 0 {
 		fmt.Fprintf(w, "%d chains checked; every one has at least one live RPC, REST or EVM endpoint\n", len(a.chains))
+	} else {
+		fmt.Fprintf(w, "%d chains checked; %d (%.1f%%) have no live RPC, REST or EVM endpoint at all —\n"+
+			"unusable from registry data alone, despite carrying status \"live\":\n",
+			len(a.chains), len(unreachable), pct(len(unreachable), len(a.chains)))
+		line := "  "
+		for _, name := range unreachable {
+			if len(line)+len(name)+2 > chainWrapWidth {
+				fmt.Fprintln(w, line)
+				line = "  "
+			}
+			line += name + ", "
+		}
+		if strings.TrimSpace(line) != "" {
+			fmt.Fprintln(w, strings.TrimSuffix(line, ", "))
+		}
+	}
+	renderNoCore(w, a)
+	renderFirstListed(w, a)
+	renderSingleDomain(w, a)
+}
+
+// renderNoCore names chains that list no RPC, REST or EVM endpoint at all. They are excluded
+// from the unreachable count on purpose — nothing was probed that could make them reachable —
+// but staying silent about them would hide a registry-completeness defect: standard tooling has
+// nothing to connect to. Real occurrences: idep and imversed, gRPC-only entries.
+func renderNoCore(w io.Writer, a *aggregates) {
+	var names []string
+	for name, c := range a.chains {
+		if c.coreTotal == 0 {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "%d chains checked; %d (%.1f%%) have no live RPC, REST or EVM endpoint at all —\n"+
-		"unusable from registry data alone, despite carrying status \"live\":\n",
-		len(a.chains), len(unreachable), pct(len(unreachable), len(a.chains)))
-	line := "  "
-	for _, name := range unreachable {
-		if len(line)+len(name)+2 > chainWrapWidth {
-			fmt.Fprintln(w, line)
-			line = "  "
+	sort.Strings(names)
+	fmt.Fprintf(w, "\n%d chain(s) list no RPC, REST or EVM endpoint at all — nothing for standard tooling to use: %s\n",
+		len(names), strings.Join(names, ", "))
+}
+
+// renderFirstListed reports the endpoint users actually get: most client tooling takes the
+// first entry in the list, so a dead first-listed RPC hurts even when the chain has nine live
+// alternatives further down. Silent when the records predate the order field.
+func renderFirstListed(w io.Writer, a *aggregates) {
+	total, dead := 0, 0
+	for _, c := range a.chains {
+		if c.hasFirst {
+			total++
+			if c.firstDead {
+				dead++
+			}
 		}
-		line += name + ", "
 	}
-	if strings.TrimSpace(line) != "" {
-		fmt.Fprintln(w, strings.TrimSuffix(line, ", "))
+	if total == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nfirst-listed endpoint (what most tooling defaults to): dead on %d of %d chains (%.1f%%)\n",
+		dead, total, pct(dead, total))
+}
+
+// renderSingleDomain flags chains whose every listed endpoint lives on one registrable domain —
+// fragility that is invisible while everything passes, and one operator decision from total
+// unreachability.
+func renderSingleDomain(w io.Writer, a *aggregates) {
+	names := make([]string, 0, len(a.chains))
+	for name, c := range a.chains {
+		if len(c.domains) == 1 {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	sort.Strings(names)
+	fmt.Fprintf(w, "\n%d chains depend on a single registrable domain for every listed endpoint:\n", len(names))
+	for _, name := range names {
+		for domain, n := range a.chains[name].domains {
+			fmt.Fprintf(w, "  %-24s %d endpoint(s), all on %s\n", name, n, domain)
+		}
 	}
 }
 

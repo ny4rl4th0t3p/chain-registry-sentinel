@@ -161,39 +161,46 @@ type job struct {
 	chain        registry.Chain
 	endpoint     registry.Endpoint
 	endpointType EndpointType
+	// order is the endpoint's 1-based position within its type's list in chain.json. Registry
+	// order is user-facing: most client tooling takes the first entry, so the report needs to
+	// know which one that was.
+	order int
 }
 
 func buildJobs(chains []registry.Chain) []job {
 	var jobs []job
+	add := func(ch registry.Chain, eps []registry.Endpoint, t EndpointType) {
+		for i, ep := range eps {
+			jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: t, order: i + 1})
+		}
+	}
 	for i := range chains {
 		ch := chains[i]
 		switch ch.ChainType {
 		case "cosmos":
-			for _, ep := range ch.RPCs {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeRPC})
-			}
-			for _, ep := range ch.RESTEndpoints {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeREST})
-			}
-			for _, ep := range ch.GRPCWebEndpoints {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeGRPCWeb})
-			}
-			for _, ep := range ch.GRPCEndpoints {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeGRPC})
-			}
-			for _, ep := range ch.WSSEndpoints {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeWSS})
-			}
+			add(ch, ch.RPCs, TypeRPC)
+			add(ch, ch.RESTEndpoints, TypeREST)
+			add(ch, ch.GRPCWebEndpoints, TypeGRPCWeb)
+			add(ch, ch.GRPCEndpoints, TypeGRPC)
+			add(ch, ch.WSSEndpoints, TypeWSS)
 		case "eip155":
-			for _, ep := range ch.EVMEndpoints {
-				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: TypeEVM})
-			}
+			add(ch, ch.EVMEndpoints, TypeEVM)
 		}
 	}
 	return jobs
 }
 
 func runProbe(ctx context.Context, client *http.Client, j job) []checks.Result {
+	results := probeByType(ctx, client, j)
+	// Stamped here rather than inside the checks: list position is registry data the probe
+	// layer never sees, and one assignment point beats six.
+	for i := range results {
+		results[i].EndpointOrder = j.order
+	}
+	return results
+}
+
+func probeByType(ctx context.Context, client *http.Client, j job) []checks.Result {
 	switch j.endpointType {
 	case TypeRPC:
 		probe := checks.ProbeEndpoint(ctx, client, j.chain, j.endpoint)
