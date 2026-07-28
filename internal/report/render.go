@@ -65,16 +65,17 @@ type chainAgg struct {
 }
 
 type aggregates struct {
-	endpoints, live int
-	rateLimited     int
-	chainIDMismatch int
-	classes         map[checks.FailureClass]int
-	domains         map[string]*domainAgg
-	chains          map[string]*chainAgg
-	withProvider    int
-	providers       map[string]struct{}
-	catchingUp      int
-	txIndexOff      int
+	endpoints, live  int
+	rateLimited      int
+	chainIDMismatch  int
+	classes          map[checks.FailureClass]int
+	domains          map[string]*domainAgg
+	chains           map[string]*chainAgg
+	withProvider     int
+	providers        map[string]struct{}
+	catchingUp       int
+	txIndexOff       int
+	methodRestricted int
 }
 
 func (a *aggregates) dead() int { return a.endpoints - a.live }
@@ -148,6 +149,9 @@ func aggregate(records []Record) *aggregates {
 			}
 			if r.TxIndex == "off" {
 				a.txIndexOff++
+			}
+			if r.MethodRestricted {
+				a.methodRestricted++
 			}
 			continue
 		}
@@ -431,8 +435,9 @@ func renderSingleDomain(w io.Writer, a *aggregates) {
 func renderQuality(w io.Writer, a *aggregates) {
 	section(w, "Node quality and metadata coverage")
 	fmt.Fprintf(w, "%d endpoints: %d live, %d dead\n", a.endpoints, a.live, a.dead())
-	fmt.Fprintf(w, "of the live endpoints: %d still catching up (answering but behind), %d with tx_index off\n",
-		a.catchingUp, a.txIndexOff)
+	fmt.Fprintf(w, "of the live endpoints: %d still catching up (answering but behind), %d with tx_index off,\n"+
+		"%d method-restricted (live, but the gateway refuses some standard queries)\n",
+		a.catchingUp, a.txIndexOff, a.methodRestricted)
 	fmt.Fprintf(w, "provider field present on %.1f%% of endpoint entries (%d distinct providers named)\n",
 		pct(a.withProvider, a.endpoints), len(a.providers))
 }

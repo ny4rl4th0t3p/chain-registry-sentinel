@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"chain-registry-sentinel/internal/checks"
@@ -241,4 +243,114 @@ type countingGRPCServer struct {
 func (s *countingGRPCServer) handleGetNodeInfo(_ context.Context, _ []byte) []byte {
 	*s.calls++
 	return buildGetNodeInfoResponse(s.network)
+}
+
+// startGatewayServer simulates a gRPC gateway with per-method behavior, driven by an
+// UnknownServiceHandler so arbitrary method names can be answered or refused. Used to model
+// the two refusal shapes observed in the wild (PublicNode vs AutoStake).
+func startGatewayServer(t *testing.T, handle func(method string, stream grpc.ServerStream) error) string {
+	t.Helper()
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpc.NewServer(grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		method, _ := grpc.MethodFromServerStream(stream)
+		var req []byte
+		_ = stream.RecvMsg(&req)
+		return handle(method, stream)
+	}))
+	go srv.Serve(lis)
+	t.Cleanup(srv.GracefulStop)
+	return lis.Addr().String()
+}
+
+// PublicNode's shape: the gateway refuses GetNodeInfo by name with a clean gRPC status, while
+// other query methods answer. The endpoint is live and usable; the probe must say so, and the
+// chain-ID check must skip rather than report a false mismatch against an unknowable network.
+func TestProbeGRPCEndpoint_CanaryBlockedGatewayIsLive(t *testing.T) {
+	addr := startGatewayServer(t, func(method string, stream grpc.ServerStream) error {
+		if strings.HasSuffix(method, "GetNodeInfo") {
+			return status.Error(codes.Unknown,
+				"Method /cosmos.base.tendermint.v1beta1.Service/GetNodeInfo is not allowed. To remove restrictions, order a dedicated full node")
+		}
+		return stream.SendMsg([]byte{})
+	})
+
+	probe := probeGRPC(t, addr)
+	if probe.FetchErr != nil {
+		t.Fatalf("blocked-canary gateway must count as live, got: %v", probe.FetchErr)
+	}
+	if !probe.CanaryBlocked {
+		t.Error("CanaryBlocked must be set when liveness came from the fallback query")
+	}
+	if r := checks.NewGRPCLiveness().Evaluate(probe); !r.Passed {
+		t.Errorf("liveness must pass, got evidence: %s", r.Evidence)
+	}
+	if r := checks.NewGRPCChainID().Evaluate(probe); !r.Skipped || r.Passed {
+		t.Error("chain-ID check must skip when the network name is unknowable")
+	}
+}
+
+// AutoStake's shape: an HTTP gateway splats a 403 text/html page into the stream — there is no
+// gRPC service behind it. The probe must not waste a fallback call and must stay dead.
+func TestProbeGRPCEndpoint_HTMLGatewayStaysDeadWithoutFallback(t *testing.T) {
+	fallbackCalls := 0
+	addr := startGatewayServer(t, func(method string, stream grpc.ServerStream) error {
+		if strings.HasSuffix(method, "GetNodeInfo") {
+			return status.Error(codes.PermissionDenied,
+				`unexpected HTTP status code received from server: 403 (Forbidden); transport: received unexpected content-type "text/html"`)
+		}
+		fallbackCalls++
+		return stream.SendMsg([]byte{})
+	})
+
+	probe := probeGRPC(t, addr)
+	if probe.FetchErr == nil {
+		t.Fatal("HTML-splatting gateway must stay dead")
+	}
+	if probe.CanaryBlocked {
+		t.Error("CanaryBlocked must not be set for a transport-shaped refusal")
+	}
+	if fallbackCalls != 0 {
+		t.Errorf("no fallback call should be made for the text/html shape, got %d", fallbackCalls)
+	}
+	if r := checks.NewGRPCLiveness().Evaluate(probe); r.Passed {
+		t.Error("liveness must fail")
+	}
+}
+
+// A gateway that refuses every method with clean gRPC statuses is not proven to be a Cosmos
+// service — the fallback must also answer before the endpoint counts as live.
+func TestProbeGRPCEndpoint_BothMethodsRefusedStaysDead(t *testing.T) {
+	addr := startGatewayServer(t, func(_ string, _ grpc.ServerStream) error {
+		return status.Error(codes.Unimplemented, "unknown service")
+	})
+
+	probe := probeGRPC(t, addr)
+	if probe.FetchErr == nil {
+		t.Fatal("both-methods-refused must stay dead")
+	}
+	if probe.CanaryBlocked {
+		t.Error("CanaryBlocked must not be set when the fallback was refused too")
+	}
+	// The kept error must be the canary's, which is what classification understands.
+	if !strings.Contains(probe.FetchErr.Error(), "unknown service") {
+		t.Errorf("expected the canary's refusal to be kept, got: %v", probe.FetchErr)
+	}
+}
+
+// The test servers above are plaintext on random ports, which under the TLS-first rule means
+// every successful probe in this file already exercises the TLS→plaintext fallback. This test
+// pins the scheme override instead: http:// must dial plaintext only.
+func TestProbeGRPCEndpoint_HTTPSchemeStaysPlaintext(t *testing.T) {
+	addr := startTestGRPCServer(t, "testchain-1")
+	probe := probeGRPC(t, "http://"+addr)
+	if probe.FetchErr != nil {
+		t.Fatalf("http:// scheme against a plaintext server must succeed, got: %v", probe.FetchErr)
+	}
+	if probe.Network != "testchain-1" {
+		t.Errorf("Network = %q, want testchain-1", probe.Network)
+	}
 }

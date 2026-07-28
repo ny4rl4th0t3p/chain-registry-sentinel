@@ -53,6 +53,10 @@ func fixtureResults() []checks.Result {
 		r.Evidence = "evidence for " + endpoint
 		return r
 	}
+	methodRestricted := func(r checks.Result) checks.Result {
+		r.MethodRestricted = true
+		return r
+	}
 
 	live1 := res("alivechain", "cosmos", "rpc_liveness", "https://rpc.healthy.example", "", true)
 	live1.CatchingUp = true
@@ -78,8 +82,9 @@ func fixtureResults() []checks.Result {
 		fail("deadchain", "cosmos", "rest_liveness", "https://lcd.wrongpath.example", "", checks.ClassHTTP404),
 		fail("evmchain", "eip155", "evm_liveness", "https://evm.wrongpath.example", "", checks.ClassHTTP404),
 		fail("flakychain", "cosmos", "rest_liveness", "https://api.wrongpath.example", "", checks.ClassHTTP404),
-		// flaky.example: 1 live + 1 timeout -> partial rot, keeps flakychain reachable
-		res("flakychain", "cosmos", "rpc_liveness", "https://rpc-1.flaky.example", "", true),
+		// flaky.example: 1 live + 1 timeout -> partial rot, keeps flakychain reachable.
+		// The live one is method-restricted: liveness confirmed via fallback query.
+		methodRestricted(res("flakychain", "cosmos", "rpc_liveness", "https://rpc-1.flaky.example", "", true)),
 		fail("flakychain", "cosmos", "rpc_liveness", "https://rpc-2.flaky.example", "", checks.ClassTimeout),
 		// healthy.example: live with quality caveats
 		live1,
@@ -230,6 +235,7 @@ func TestRenderComputesTheHeadlineNumbers(t *testing.T) {
 		"wrongpath.example",
 		// quality and coverage: 3 gonecorp records carry a provider, of 11 measured
 		"1 still catching up (answering but behind), 1 with tx_index off",
+		"1 method-restricted (live, but the gateway refuses some standard queries)",
 		"provider field present on 27.3% of endpoint entries (1 distinct providers named)",
 		// deadchain and evmchain lead with a dead endpoint; alivechain and flakychain do not
 		"first-listed endpoint (what most tooling defaults to): dead on 2 of 4 chains (50.0%)",

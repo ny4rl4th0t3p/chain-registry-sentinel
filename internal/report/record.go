@@ -55,7 +55,10 @@ type Record struct {
 	Evidence     string              `json:"evidence,omitempty"`
 	CatchingUp   bool                `json:"catching_up,omitempty"`
 	TxIndex      string              `json:"tx_index,omitempty"`
-	Streak       int                 `json:"streak,omitempty"`
+	// MethodRestricted: live, but the gateway refused the standard probe method by name and
+	// liveness came from a fallback query — usable with caveats, same family as tx_index off.
+	MethodRestricted bool `json:"method_restricted,omitempty"`
+	Streak           int  `json:"streak,omitempty"`
 }
 
 // liveness reports whether the record is a liveness check, the unit all endpoint counting is
@@ -90,28 +93,29 @@ func Build(results []checks.Result, stateMap map[string]state.ChainState, meta R
 		}
 		host := hostOf(r.Endpoint)
 		rec := Record{
-			RunTS:          meta.TS,
-			Vantage:        meta.Vantage,
-			RegistryCommit: meta.RegistryCommit,
-			Concurrency:    meta.Concurrency,
-			TimeoutMS:      meta.Timeout.Milliseconds(),
-			Chain:          r.Chain,
-			ChainID:        r.ChainID,
-			ChainType:      r.ChainType,
-			Check:          r.Check,
-			Endpoint:       r.Endpoint,
-			Host:           host,
-			Domain:         domainOf(host),
-			Provider:       r.Provider,
-			Order:          r.EndpointOrder,
-			Passed:         r.Passed,
-			Skipped:        r.Skipped,
-			FailureClass:   r.FailureClass,
-			HTTPStatus:     r.HTTPStatus,
-			LatencyMS:      r.Latency.Milliseconds(),
-			Evidence:       r.Evidence,
-			CatchingUp:     r.CatchingUp,
-			TxIndex:        r.TxIndex,
+			RunTS:            meta.TS,
+			Vantage:          meta.Vantage,
+			RegistryCommit:   meta.RegistryCommit,
+			Concurrency:      meta.Concurrency,
+			TimeoutMS:        meta.Timeout.Milliseconds(),
+			Chain:            r.Chain,
+			ChainID:          r.ChainID,
+			ChainType:        r.ChainType,
+			Check:            r.Check,
+			Endpoint:         r.Endpoint,
+			Host:             host,
+			Domain:           domainOf(host),
+			Provider:         r.Provider,
+			Order:            r.EndpointOrder,
+			Passed:           r.Passed,
+			Skipped:          r.Skipped,
+			FailureClass:     r.FailureClass,
+			HTTPStatus:       r.HTTPStatus,
+			LatencyMS:        r.Latency.Milliseconds(),
+			Evidence:         r.Evidence,
+			CatchingUp:       r.CatchingUp,
+			TxIndex:          r.TxIndex,
+			MethodRestricted: r.MethodRestricted,
 		}
 		if cs, ok := stateMap[r.Chain]; ok {
 			rec.Streak = cs.Endpoints[state.EndpointKey(r.Check, r.Endpoint)].ConsecutiveFailures

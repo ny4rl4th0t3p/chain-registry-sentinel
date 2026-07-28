@@ -36,6 +36,12 @@ type Result struct {
 	// 0 means unknown. It matters because most client tooling simply takes the first entry,
 	// so "is the first-listed endpoint dead" maps directly to user impact.
 	EndpointOrder int
+
+	// MethodRestricted: the endpoint is live, but its gateway refused the standard probe
+	// method by name and liveness was confirmed via a fallback query (observed at PublicNode's
+	// gRPC gateways). A quality datum in the same family as TxIndex — the endpoint works, with
+	// caveats a consumer should know about.
+	MethodRestricted bool
 }
 
 // newResult seeds a Result from the registry entry under test. Centralized so Provider —
