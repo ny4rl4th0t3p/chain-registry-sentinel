@@ -22,8 +22,10 @@ const (
 )
 
 // FailureClass is a stable, machine-groupable cause for a failed probe. The set and the
-// ordering of the checks in Classify are ported from analysis/classify.awk, which was derived
-// from the real error strings of a full-registry run rather than guessed at.
+// ordering of the checks in Classify were derived from the real error strings of a
+// full-registry run (2026-07-25, 2904 failures) via an awk prototype, validated against this
+// implementation class-by-class, and the prototype then retired. classify_fixture_test.go
+// carries observed samples of every class.
 type FailureClass string
 
 const (
@@ -322,7 +324,7 @@ func classifyPayload(msg string) FailureClass {
 }
 
 // classifyGRPC matches on the textual status name rather than calling status.FromError, so this
-// file stays free of a gRPC dependency and mirrors analysis/classify.awk exactly. Reached only
+// file stays free of a gRPC dependency. Reached only
 // after the inner cause checks above have declined, so what remains is a genuine gRPC-level
 // condition rather than a wrapped transport failure.
 func classifyGRPC(msg string) FailureClass {

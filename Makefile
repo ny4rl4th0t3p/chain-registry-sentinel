@@ -1,8 +1,8 @@
 BINARY        := sentinel
 IMAGE         := chain-registry-sentinel
 REGISTRY_URL  ?= https://github.com/ny4rl4th0t3p/chain-registry
-CONCURRENCY   ?= 250
-TIMEOUT       ?= 30s
+CONCURRENCY   ?= 16
+TIMEOUT       ?= 60s
 CHAINS        ?= cosmoshub,osmosis,juno
 VERBOSE       ?= false
 STATE_PATH    ?=
