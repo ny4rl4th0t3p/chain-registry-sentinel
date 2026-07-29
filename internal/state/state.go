@@ -50,6 +50,15 @@ type ChainState struct {
 	LastPROpenedAt     time.Time                `json:"last_pr_opened_at,omitempty"`
 	LastHashPROpenedAt time.Time                `json:"last_hash_pr_opened_at,omitempty"`
 	Endpoints          map[string]EndpointState `json:"endpoints"`
+
+	// Chain-death tracking (v0.7.0, additive — schema stays at 1). The streak counts
+	// consecutive runs in which the chain looked dead via either detection path: no live core
+	// endpoint with healthy operators having withdrawn, or every answering RPC reporting a
+	// stale latest_block_time. It advances only on runs where core checks actually executed
+	// from a healthy vantage; see updateChainDeathStreaks.
+	ChainDeadStreak      int       `json:"chain_dead_streak,omitempty"`
+	ChainDeadFirstTime   time.Time `json:"chain_dead_first_time,omitempty"`
+	LastStatusPROpenedAt time.Time `json:"last_status_pr_opened_at,omitempty"`
 }
 
 // Load reads the state file at a path. Returns an empty ChainState when the file

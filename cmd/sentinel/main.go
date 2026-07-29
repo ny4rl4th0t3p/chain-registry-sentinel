@@ -35,21 +35,24 @@ type CLI struct {
 	// dns_failure, false NXDOMAINs and v6-only dials: data that indicts the vantage, not the
 	// endpoints. 16 was measured clean over the full registry; raising it is one flag for those
 	// who know their resolver chain can take it.
-	Concurrency    int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"16"`
-	StatePath      string           `help:"Directory for per-chain state files" env:"INPUT_STATE_PATH"`
-	ResetState     bool             `help:"Start unreadable state files from scratch instead of aborting" env:"INPUT_RESET_STATE"`
-	MinFailures    int              `help:"Consecutive failures before flagging an endpoint" env:"INPUT_MIN_FAILURES" default:"14"`
-	DryRun         bool             `help:"Read state but do not write it or open PRs" env:"INPUT_DRY_RUN"`
-	GithubToken    string           `help:"GitHub token for opening PRs" env:"INPUT_GITHUB_TOKEN"`
-	GithubRepo     string           `help:"Target repo (owner/repo)" env:"INPUT_GITHUB_REPO"`
-	MaxNewPRs      int              `help:"Max new PRs per run" env:"INPUT_MAX_NEW_PRS" default:"5"`
-	PRCooldownDays int              `help:"Days between PRs per chain" env:"INPUT_PR_COOLDOWN_DAYS" default:"7"`
-	Report         string           `help:"Directory to write this run's JSONL records into (one file per run)" env:"INPUT_REPORT"`
-	Vantage        string           `help:"Label stamped into every record to compare runs across networks" env:"INPUT_VANTAGE"`
-	UserAgent      string           `help:"User-Agent for probe requests (default identifies the sentinel and repo)" env:"INPUT_USER_AGENT"`
-	From           string           `help:"Render a report from a JSONL record file written by --report, instead of probing" env:"INPUT_FROM"`
-	Verbose        bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
-	Version        kong.VersionFlag `name:"version" help:"Print version and exit"`
+	Concurrency          int              `help:"Max simultaneous endpoint probes" env:"INPUT_CONCURRENCY" default:"16"`
+	StatePath            string           `help:"Directory for per-chain state files" env:"INPUT_STATE_PATH"`
+	ResetState           bool             `help:"Start unreadable state files from scratch instead of aborting" env:"INPUT_RESET_STATE"`
+	MinFailures          int              `help:"Consecutive failures before flagging an endpoint" env:"INPUT_MIN_FAILURES" default:"14"`
+	ChainDeathMinRuns    int              `help:"Dead-looking runs before a status-flip PR" env:"INPUT_CHAIN_DEATH_MIN_RUNS" default:"14"`
+	ChainDeathStaleAfter time.Duration    `help:"Block age that marks a chain as halted" env:"INPUT_CHAIN_DEATH_STALE_AFTER" default:"168h"`
+	MaxStatusPRs         int              `help:"Max new chain status-flip PRs per run" env:"INPUT_MAX_STATUS_PRS" default:"3"`
+	DryRun               bool             `help:"Read state but do not write it or open PRs" env:"INPUT_DRY_RUN"`
+	GithubToken          string           `help:"GitHub token for opening PRs" env:"INPUT_GITHUB_TOKEN"`
+	GithubRepo           string           `help:"Target repo (owner/repo)" env:"INPUT_GITHUB_REPO"`
+	MaxNewPRs            int              `help:"Max new PRs per run" env:"INPUT_MAX_NEW_PRS" default:"5"`
+	PRCooldownDays       int              `help:"Days between PRs per chain" env:"INPUT_PR_COOLDOWN_DAYS" default:"7"`
+	Report               string           `help:"Directory to write this run's JSONL records into (one file per run)" env:"INPUT_REPORT"`
+	Vantage              string           `help:"Label stamped into every record to compare runs across networks" env:"INPUT_VANTAGE"`
+	UserAgent            string           `help:"User-Agent for probe requests (default identifies the sentinel)" env:"INPUT_USER_AGENT"`
+	From                 string           `help:"Render a report from a JSONL record file written by --report" env:"INPUT_FROM"`
+	Verbose              bool             `short:"v" help:"Enable debug logging to stderr" env:"INPUT_VERBOSE"`
+	Version              kong.VersionFlag `name:"version" help:"Print version and exit"`
 }
 
 // exitFatal is returned only when the sentinel could not run: an unreadable registry, no chains,
@@ -140,18 +143,25 @@ func (t EndpointType) String() string {
 	}
 }
 
+// Liveness check names, shared between probing and chain-death detection.
+const (
+	checkRPCLiveness  = "rpc_liveness"
+	checkRESTLiveness = "rest_liveness"
+	checkEVMLiveness  = "evm_liveness"
+)
+
 func (t EndpointType) livenessCheckName() string {
 	switch t {
 	case TypeRPC:
-		return "rpc_liveness"
+		return checkRPCLiveness
 	case TypeREST:
-		return "rest_liveness"
+		return checkRESTLiveness
 	case TypeGRPCWeb:
 		return "grpc_web_liveness"
 	case TypeGRPC:
 		return "grpc_liveness"
 	case TypeEVM:
-		return "evm_liveness"
+		return checkEVMLiveness
 	case TypeWSS:
 		return "wss_liveness"
 	default:
@@ -406,6 +416,33 @@ func loadFilteredChains(cli CLI) (chains []registry.Chain, missing []string) {
 	return chains, missingFromRegistry(filter, chains)
 }
 
+// openPRFlows dispatches the three PR flows in order. A chain getting a status-flip PR is
+// excluded from the per-endpoint flows: deleting endpoints or fixing hashes on a chain about
+// to be marked killed is noise.
+func openPRFlows(
+	cli CLI,
+	chains []registry.Chain,
+	jobs []job,
+	client *http.Client,
+	stateMap map[string]state.ChainState,
+	flagged int,
+	deathCandidates []string,
+	deathFacts map[string]*chainDeathFacts,
+	domainLive map[string]int,
+	now time.Time,
+) {
+	exclude := make(map[string]bool, len(deathCandidates))
+	for _, name := range deathCandidates {
+		exclude[name] = true
+	}
+	maybeOpenStatusPRs(cli, deathCandidates, deathFacts, domainLive, stateMap, now)
+	if flagged > 0 {
+		fmt.Printf("%d endpoint(s) flagged for action\n", flagged)
+		maybeOpenPRs(cli, chains, jobs, client, stateMap, now, exclude)
+	}
+	maybeOpenHashPRs(cli, chains, stateMap, now, exclude)
+}
+
 // missingFromRegistry returns the --chains entries that matched no loaded chain, so they can be
 // reported rather than silently ignored: a typo'd or renamed chain would otherwise look like a
 // clean run that simply found nothing wrong.
@@ -545,7 +582,9 @@ func updateState(
 		stateMap[r.Chain] = cs
 	}
 	flagged := 0
-	for chainName, cs := range stateMap {
+	// Keys only, then explicit lookups: ChainState is too large to copy per iteration.
+	for chainName := range stateMap {
+		cs := stateMap[chainName]
 		cs.Prune(activeKeys[chainName])
 		stateMap[chainName] = cs
 		// Keys only, then an explicit lookup: EndpointState is too large to copy on every
@@ -567,8 +606,9 @@ func updateState(
 }
 
 func saveStateMap(stateMap map[string]state.ChainState, statePath string, now time.Time) {
-	for chainName, cs := range stateMap {
-		if err := state.Save(filepath.Join(statePath, chainName+".json"), cs, now); err != nil {
+	// Keys only, then explicit lookups: ChainState is too large to copy per iteration.
+	for chainName := range stateMap {
+		if err := state.Save(filepath.Join(statePath, chainName+".json"), stateMap[chainName], now); err != nil {
 			slog.Warn("could not save state", "chain", chainName, "err", err)
 		}
 	}
@@ -638,9 +678,10 @@ func splitRepo(ownerRepo string) (owner, repo string) {
 // The state key format is "check|address".
 func collectFlagged(stateMap map[string]state.ChainState, threshold int) map[string][]github.FlaggedEndpoint {
 	result := make(map[string][]github.FlaggedEndpoint)
-	for chainName, cs := range stateMap {
-		// Keys only, then an explicit lookup — see updateState: EndpointState is too large to
-		// copy per iteration.
+	// Keys only, then explicit lookups — see updateState: ChainState and EndpointState are both
+	// too large to copy per iteration.
+	for chainName := range stateMap {
+		cs := stateMap[chainName]
 		for key := range cs.Endpoints {
 			ep := cs.Endpoints[key]
 			if ep.ConsecutiveFailures < threshold {
@@ -838,6 +879,7 @@ func maybeOpenPRs(
 	probeClient *http.Client,
 	stateMap map[string]state.ChainState,
 	now time.Time,
+	exclude map[string]bool,
 ) {
 	repo := cli.GithubRepo
 	if repo == "" {
@@ -862,6 +904,9 @@ func maybeOpenPRs(
 	maxNew := cli.MaxNewPRs
 	cooldown := time.Duration(cli.PRCooldownDays) * 24 * time.Hour
 	flagged := collectFlagged(stateMap, cli.MinFailures)
+	for name := range exclude {
+		delete(flagged, name)
+	}
 	if len(flagged) == 0 {
 		return
 	}
@@ -966,6 +1011,7 @@ func maybeOpenHashPRs(
 	chains []registry.Chain,
 	stateMap map[string]state.ChainState,
 	now time.Time,
+	exclude map[string]bool,
 ) {
 	allMismatches := runHashChecks(chains, cli.Registry)
 	printHashSummary(chains, allMismatches)
@@ -1000,6 +1046,9 @@ func maybeOpenHashPRs(
 	}
 	for i := range chains {
 		ch := chains[i]
+		if exclude[ch.Name] {
+			continue
+		}
 		mm := allMismatches[ch.Name]
 		if len(mm) == 0 {
 			continue
@@ -1070,9 +1119,14 @@ func main() {
 
 	now := time.Now().UTC()
 	flagged := 0
+	var deathCandidates []string
+	var deathFacts map[string]*chainDeathFacts
+	var domainLive map[string]int
 	if cli.StatePath != "" {
 		activeKeys := buildActiveLivenessKeys(jobs)
 		flagged = updateState(stateMap, results, activeKeys, cli.MinFailures, now)
+		// Before the save, so the chain-death streaks persist with the endpoint streaks.
+		deathCandidates, deathFacts, domainLive = runChainDeathDetection(results, stateMap, cli.ChainDeathMinRuns, cli.ChainDeathStaleAfter, now)
 		if !cli.DryRun {
 			saveStateMap(stateMap, cli.StatePath, now)
 		}
@@ -1080,12 +1134,7 @@ func main() {
 
 	printSummary(perChain, keys)
 	emitReport(cli, results, stateMap, now)
-
-	if flagged > 0 {
-		fmt.Printf("%d endpoint(s) flagged for action\n", flagged)
-		maybeOpenPRs(cli, chains, jobs, client, stateMap, now)
-	}
-	maybeOpenHashPRs(cli, chains, stateMap, now)
+	openPRFlows(cli, chains, jobs, client, stateMap, flagged, deathCandidates, deathFacts, domainLive, now)
 
 	for _, name := range missingChains {
 		slog.Warn("chain not found in registry", "chain", name, "hint", "no chain.json — may be EVM-only or unlisted")

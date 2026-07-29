@@ -361,3 +361,89 @@ func TestBuildHashMismatchPRBody(t *testing.T) {
 		t.Error("body should contain expected hash")
 	}
 }
+
+// writeStatusChainJSON writes a chain.json fixture into a temp registry and returns the
+// registry path. Field order and unknown fields matter: EditChainStatus must be a surgical
+// one-field flip, since the PR diff is the product.
+func writeStatusChainJSON(t *testing.T, status string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "deadchain"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `{
+  "$schema": "../chain.schema.json",
+  "chain_name": "deadchain",
+  "status": "` + status + `",
+  "chain_id": "deadchain-1",
+  "extra": "preserved"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "deadchain", "chain.json"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return dir
+}
+
+func TestEditChainStatus_FlipsLiveToKilled(t *testing.T) {
+	dir := writeStatusChainJSON(t, "live")
+	out, err := github.EditChainStatus(dir, "deadchain")
+	if err != nil {
+		t.Fatalf("EditChainStatus: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `"status": "killed"`) {
+		t.Errorf("status not flipped:\n%s", s)
+	}
+	if strings.Contains(s, `"live"`) {
+		t.Errorf("live still present:\n%s", s)
+	}
+	if !strings.Contains(s, `"$schema": "../chain.schema.json"`) || !strings.Contains(s, `"extra": "preserved"`) {
+		t.Errorf("surrounding fields disturbed:\n%s", s)
+	}
+	if !strings.HasPrefix(s, "{\n  \"$schema\"") {
+		t.Errorf("field order not preserved:\n%s", s)
+	}
+}
+
+// The registry may have been fixed between detection and PR; flipping anything other than
+// live→killed is never correct, so a non-live status is a no-op, not an error.
+func TestEditChainStatus_NoOpWhenNotLive(t *testing.T) {
+	dir := writeStatusChainJSON(t, "killed")
+	out, err := github.EditChainStatus(dir, "deadchain")
+	if err != nil {
+		t.Fatalf("EditChainStatus: %v", err)
+	}
+	if out != nil {
+		t.Errorf("want nil (no-op) when status is not live, got:\n%s", out)
+	}
+}
+
+func TestBuildStatusPRBody(t *testing.T) {
+	ev := github.StatusPREvidence{
+		Streak:          14,
+		FirstSeen:       time.Date(2026, 7, 14, 0, 0, 0, 0, time.UTC),
+		EndpointsProbed: 53,
+		ClassLines:      []string{"| `rpc` | 0/20 live — dns_nxdomain (18), timeout (2) |"},
+		Withdrawn: []github.WithdrawnOperator{
+			{Domain: "polkachu.com", LiveElsewhere: 108, DeadHere: 3},
+		},
+		NewestBlockTime: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC),
+		SampleHost:      "evmos-rpc.polkachu.com",
+	}
+	body := github.BuildStatusPRBody("evmos", ev)
+	for _, want := range []string{
+		"14 consecutive sentinel runs",
+		"2026-07-14",
+		"53 declared endpoints",
+		"dns_nxdomain (18)",
+		"polkachu.com",
+		"2026-05-18T12:00:00Z",
+		"dig +short evmos-rpc.polkachu.com",
+		"close this PR",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+}

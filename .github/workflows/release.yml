@@ -26,9 +26,11 @@ jobs:
           go-version: stable
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
+        uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Explicit major, never 'latest': @v5's 'latest' silently locked to GoReleaser v1,
+          # which rejects our version: 2 config — exactly the class of surprise a pin avoids.
+          version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

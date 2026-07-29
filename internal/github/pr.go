@@ -387,3 +387,162 @@ func OpenHashPR(ctx context.Context, client *Client, req HashPRRequest) (string,
 	}
 	return prURL, nil
 }
+
+// WithdrawnOperator is one healthy operator that dropped the chain: its domain serves other
+// chains fine but returns nothing for this one. The strongest machine-gatherable evidence of
+// deliberate chain abandonment.
+type WithdrawnOperator struct {
+	Domain        string
+	LiveElsewhere int // live endpoints this operator serves on other chains, this run
+	DeadHere      int // this chain's dead endpoints on this domain
+}
+
+// StatusPREvidence is everything the status-flip PR body presents. All of it is gathered by
+// the sentinel's own probing — no human research step, by design; the maintainer reviewing the
+// PR is the human check, exactly as with endpoint-removal PRs.
+type StatusPREvidence struct {
+	Streak          int       // consecutive runs the chain has looked dead
+	FirstSeen       time.Time // when the current streak started
+	EndpointsProbed int       // every declared endpoint probed this run, all types
+	ClassLines      []string  // per-endpoint-type failure summary, pre-rendered by the caller
+	Withdrawn       []WithdrawnOperator
+	// NewestBlockTime is the freshest latest_block_time any answering node reported; zero when
+	// nothing answered at all. A halted chain's survivors keep answering with this frozen.
+	NewestBlockTime time.Time
+	SampleHost      string // one dead service hostname for the "verify it yourself" line
+}
+
+// StatusPRRequest contains everything needed to open a status-flip PR for one chain.
+type StatusPRRequest struct {
+	Owner        string
+	Repo         string
+	BaseBranch   string // empty → resolved via DefaultBranch
+	ChainName    string
+	RegistryPath string
+	Evidence     StatusPREvidence
+}
+
+// EditChainStatus reads {registryPath}/{chainName}/chain.json and flips status to "killed".
+// Returns nil, nil when the status is already not "live" — the registry may have been fixed
+// between detection and PR, and flipping anything other than live→killed is never correct.
+func EditChainStatus(registryPath, chainName string) ([]byte, error) {
+	p := filepath.Join(registryPath, chainName, "chain.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("EditChainStatus: %w", err)
+	}
+	if gjson.GetBytes(data, "status").String() != "live" {
+		return nil, nil
+	}
+	out, err := sjson.SetBytes(data, "status", "killed")
+	if err != nil {
+		return nil, fmt.Errorf("EditChainStatus: %w", err)
+	}
+	return out, nil
+}
+
+// BuildStatusPRBody renders the PR description for marking a chain as killed.
+func BuildStatusPRBody(chainName string, ev StatusPREvidence) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## `%s` appears to be a dead chain\n\n", chainName)
+	fmt.Fprintf(&sb, "This PR flips `status` from `live` to `killed` — one line that removes %d declared endpoints\n", ev.EndpointsProbed)
+	sb.WriteString("from every downstream consumer's view at once, instead of deleting them one by one.\n\n")
+
+	fmt.Fprintf(&sb, "**The chain has looked dead for %d consecutive sentinel runs** (since %s).\n\n",
+		ev.Streak, ev.FirstSeen.Format("2006-01-02"))
+
+	if len(ev.ClassLines) > 0 {
+		sb.WriteString("| Check | Result |\n|-------|--------|\n")
+		for _, line := range ev.ClassLines {
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(ev.Withdrawn) > 0 {
+		sb.WriteString("**Healthy operators have withdrawn from this chain.** Each of these providers serves\n")
+		sb.WriteString("other chains normally but returns nothing for this one — deliberate decommission, not outage:\n\n")
+		sb.WriteString("| Operator | Dead here | Live on other chains |\n|----------|-----------|----------------------|\n")
+		for _, w := range ev.Withdrawn {
+			fmt.Fprintf(&sb, "| `%s` | %d | %d |\n", w.Domain, w.DeadHere, w.LiveElsewhere)
+		}
+		sb.WriteString("\n")
+	}
+
+	if !ev.NewestBlockTime.IsZero() {
+		fmt.Fprintf(&sb, "The freshest `latest_block_time` any still-answering node reports is **%s** — block\n",
+			ev.NewestBlockTime.Format(time.RFC3339))
+		sb.WriteString("production has stopped; the survivors are answering about a chain that no longer advances.\n\n")
+	}
+
+	if ev.SampleHost != "" {
+		sb.WriteString("Verify in one line:\n\n")
+		fmt.Fprintf(&sb, "```\ndig +short %s   # no address\n```\n\n", ev.SampleHost)
+	}
+
+	sb.WriteString("---\n\n")
+	fmt.Fprintf(&sb, "> Opened automatically by chain-registry-sentinel for chain `%s`.\n", chainName)
+	sb.WriteString("> If this chain is alive somewhere the sentinel cannot see, close this PR — endpoint\n")
+	sb.WriteString("> streaks reset on any successful probe, and a fresh PR would need the full streak again.\n")
+	return sb.String()
+}
+
+// OpenStatusPR opens a PR flipping a dead chain's status to "killed".
+// Returns ("", nil) when a PR is already open or the edit is a no-op.
+func OpenStatusPR(ctx context.Context, client *Client, req StatusPRRequest) (string, error) {
+	baseBranch := req.BaseBranch
+	if baseBranch == "" {
+		var err error
+		baseBranch, err = client.DefaultBranch(ctx, req.Owner, req.Repo)
+		if err != nil {
+			return "", fmt.Errorf("OpenStatusPR: %w", err)
+		}
+	}
+	title := "[sentinel] mark " + req.ChainName + " as killed"
+	open, err := client.HasOpenPR(ctx, req.Owner, req.Repo, title)
+	if err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	if open {
+		return "", nil
+	}
+	n, err := client.NextBranchN(ctx, req.Owner, req.Repo, req.ChainName+"-status")
+	if err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	branch := fmt.Sprintf("sentinel/%s-status-%d", req.ChainName, n)
+	filePath := req.ChainName + "/chain.json"
+	baseSHA, blobSHA, err := prepareCommit(ctx, client, req.Owner, req.Repo, baseBranch, filePath)
+	if err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	content, err := EditChainStatus(req.RegistryPath, req.ChainName)
+	if err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	if content == nil {
+		return "", nil
+	}
+	if err := client.CreateBranch(ctx, req.Owner, req.Repo, branch, baseSHA); err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	commitMsg := "sentinel: mark " + req.ChainName + " as killed"
+	if err := client.CommitFile(ctx, req.Owner, req.Repo, filePath, branch, commitMsg, blobSHA, content); err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	if err := client.EnsureLabel(ctx, req.Owner, req.Repo, labelSentinel, colorSentinel); err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	if err := client.EnsureLabel(ctx, req.Owner, req.Repo, labelAutomated, colorAutomated); err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	body := BuildStatusPRBody(req.ChainName, req.Evidence)
+	prNum, prURL, err := client.CreatePR(ctx, req.Owner, req.Repo, title, body, branch, baseBranch)
+	if err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	if err := client.AddLabels(ctx, req.Owner, req.Repo, prNum, []string{labelSentinel, labelAutomated}); err != nil {
+		return "", fmt.Errorf("OpenStatusPR: %w", err)
+	}
+	return prURL, nil
+}

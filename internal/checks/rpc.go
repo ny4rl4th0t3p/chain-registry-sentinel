@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"chain-registry-sentinel/internal/registry"
 )
@@ -18,16 +19,22 @@ type rpcNodeInfo struct {
 	} `json:"other"`
 }
 
+type rpcSyncInfo struct {
+	CatchingUp bool `json:"catching_up"`
+	// LatestBlockTime is chain-death evidence: a halted chain's surviving nodes keep answering
+	// /status while this timestamp stops advancing.
+	LatestBlockTime time.Time `json:"latest_block_time"`
+}
+
 type rpcStatus struct {
 	Result struct {
 		NodeInfo rpcNodeInfo `json:"node_info"`
-		SyncInfo struct {
-			CatchingUp bool `json:"catching_up"`
-		} `json:"sync_info"`
+		SyncInfo rpcSyncInfo `json:"sync_info"`
 	} `json:"result"`
 	// Some nodes (e.g. Sei via Pocket Network) omit the result wrapper and
 	// return node_info directly at the top level.
 	DirectNodeInfo rpcNodeInfo `json:"node_info"`
+	DirectSyncInfo rpcSyncInfo `json:"sync_info"`
 }
 
 // nodeInfo returns whichever of the two shapes carried a chain ID.
@@ -36,6 +43,14 @@ func (s *rpcStatus) nodeInfo() rpcNodeInfo {
 		return s.Result.NodeInfo
 	}
 	return s.DirectNodeInfo
+}
+
+// syncInfo follows the same shape the chain ID came from.
+func (s *rpcStatus) syncInfo() rpcSyncInfo {
+	if s.Result.NodeInfo.Network != "" {
+		return s.Result.SyncInfo
+	}
+	return s.DirectSyncInfo
 }
 
 // ProbeEndpoint fetches /status once for an endpoint. Both checks share this result.
@@ -71,7 +86,9 @@ func (c *RPCLiveness) Evaluate(probe EndpointProbe) Result {
 	if r.Passed {
 		// Only meaningful once the node answered, and guarded on r.Passed so probe.Status
 		// cannot be nil here.
-		r.CatchingUp = probe.Status.Result.SyncInfo.CatchingUp
+		sync := probe.Status.syncInfo()
+		r.CatchingUp = sync.CatchingUp
+		r.LatestBlockTime = sync.LatestBlockTime
 		r.TxIndex = probe.Status.nodeInfo().Other.TxIndex
 	}
 	return r

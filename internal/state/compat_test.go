@@ -75,6 +75,9 @@ func TestLoadLegacyV1StatePreservesStreaks(t *testing.T) {
 	}
 
 	// Fields absent from the old format must read as zero values rather than causing a failure.
+	if cs.ChainDeadStreak != 0 || !cs.ChainDeadFirstTime.IsZero() || !cs.LastStatusPROpenedAt.IsZero() {
+		t.Error("chain-death fields must read as zero from a legacy file")
+	}
 	if dead.Provider != "" {
 		t.Errorf("Provider = %q, want empty for a legacy file", dead.Provider)
 	}

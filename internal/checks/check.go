@@ -24,11 +24,14 @@ type Result struct {
 	HTTPStatus   int           // 0 when no HTTP response arrived
 	Latency      time.Duration // time to complete the probe; 0 when not measured
 
-	// Node quality, read from /status on a successful probe. Neither field ever affects
+	// Node quality, read from /status on a successful probe. None of these ever affect
 	// Passed or a failure streak: a node that is catching up is a real node, and proposing
-	// its removal because it is behind would be wrong. Reporting only.
-	CatchingUp bool   // sync_info.catching_up; false when the field is absent
-	TxIndex    string // node_info.other.tx_index: "on", "off", or "" when absent
+	// its removal because it is behind would be wrong. Reporting only — except
+	// LatestBlockTime, which additionally feeds chain-death detection: a halted chain's
+	// surviving nodes answer /status forever with a timestamp that stopped advancing.
+	CatchingUp      bool      // sync_info.catching_up; false when the field is absent
+	TxIndex         string    // node_info.other.tx_index: "on", "off", or "" when absent
+	LatestBlockTime time.Time // sync_info.latest_block_time; zero when absent
 
 	// EndpointOrder is the 1-based position of the endpoint within its type's list in
 	// chain.json, stamped by the caller after Evaluate rather than set here: position is

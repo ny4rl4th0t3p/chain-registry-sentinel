@@ -55,6 +55,10 @@ type Record struct {
 	Evidence     string              `json:"evidence,omitempty"`
 	CatchingUp   bool                `json:"catching_up,omitempty"`
 	TxIndex      string              `json:"tx_index,omitempty"`
+	// LatestBlockTime is RFC3339 (string rather than time.Time so omitempty works); set only
+	// when the node reported one. Chain-death evidence: a halted chain's survivors answer with
+	// this frozen.
+	LatestBlockTime string `json:"latest_block_time,omitempty"`
 	// MethodRestricted: live, but the gateway refused the standard probe method by name and
 	// liveness came from a fallback query — usable with caveats, same family as tx_index off.
 	MethodRestricted bool `json:"method_restricted,omitempty"`
@@ -117,6 +121,9 @@ func Build(results []checks.Result, stateMap map[string]state.ChainState, meta R
 			TxIndex:          r.TxIndex,
 			MethodRestricted: r.MethodRestricted,
 		}
+		if !r.LatestBlockTime.IsZero() {
+			rec.LatestBlockTime = r.LatestBlockTime.UTC().Format(time.RFC3339)
+		}
 		if cs, ok := stateMap[r.Chain]; ok {
 			rec.Streak = cs.Endpoints[state.EndpointKey(r.Check, r.Endpoint)].ConsecutiveFailures
 		}
@@ -151,6 +158,19 @@ func hostOf(address string) string {
 		return h
 	}
 	return host
+}
+
+// EndpointDomain returns the registrable domain for a registry address — the same derivation
+// records use, exported so chain-death detection groups endpoints by operator identically to
+// the report. Same caveats as domainOf.
+func EndpointDomain(address string) string {
+	return domainOf(hostOf(address))
+}
+
+// EndpointHost returns the bare hostname for a registry address (scheme, path and port
+// stripped) — usable directly in a `dig` command, which a PR body's verify line needs.
+func EndpointHost(address string) string {
+	return hostOf(address)
 }
 
 // domainOf reduces a host to its registrable domain using the naive last-two-labels rule.

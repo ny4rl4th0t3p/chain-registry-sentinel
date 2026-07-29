@@ -26,6 +26,15 @@ inputs:
   min-failures:
     description: 'Consecutive failures before flagging an endpoint for removal'
     default: '14'
+  chain-death-min-runs:
+    description: 'Consecutive dead-looking runs before a chain status-flip PR (live -> killed)'
+    default: '14'
+  chain-death-stale-after:
+    description: 'How old the newest block must be before an answering chain counts as halted (Go duration; raise during a known disaster recovery)'
+    default: '168h'
+  max-status-prs:
+    description: 'Max new chain status-flip PRs per run'
+    default: '3'
   dry-run:
     description: 'Read state but do not write files or open PRs'
     default: 'false'
@@ -54,6 +63,9 @@ runs:
     INPUT_STATE_PATH: ${{ inputs.state-path }}
     INPUT_RESET_STATE: ${{ inputs.reset-state }}
     INPUT_MIN_FAILURES: ${{ inputs.min-failures }}
+    INPUT_CHAIN_DEATH_MIN_RUNS: ${{ inputs.chain-death-min-runs }}
+    INPUT_CHAIN_DEATH_STALE_AFTER: ${{ inputs.chain-death-stale-after }}
+    INPUT_MAX_STATUS_PRS: ${{ inputs.max-status-prs }}
     INPUT_DRY_RUN: ${{ inputs.dry-run }}
     INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
     INPUT_MAX_NEW_PRS: ${{ inputs.max-new-prs }}

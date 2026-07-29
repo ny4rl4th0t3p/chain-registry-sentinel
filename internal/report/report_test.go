@@ -297,6 +297,58 @@ func TestRenderNamesChainsWithoutCoreEndpoints(t *testing.T) {
 	}
 }
 
+// Death candidates: a chain that is unreachable while its operators serve other chains fine
+// (the withdrawal signature), and a halted chain whose every answering RPC is frozen. Both are
+// single-run heuristics; the section must say so and must not fire on ordinary partial rot.
+func TestRenderChainDeathCandidates(t *testing.T) {
+	res := func(chain, check, endpoint string, passed bool, class checks.FailureClass) checks.Result {
+		return checks.Result{
+			Chain: chain, ChainID: chain + "-1", ChainType: "cosmos",
+			Check: check, Endpoint: endpoint, Passed: passed, FailureClass: class,
+		}
+	}
+	stale := runTS.Add(-30 * 24 * time.Hour)
+	halted1 := res("haltedchain", "rpc_liveness", "https://rpc-1.halted.example", true, checks.ClassNone)
+	halted1.LatestBlockTime = stale
+	halted2 := res("haltedchain", "rpc_liveness", "https://rpc-2.halted.example", true, checks.ClassNone)
+	halted2.LatestBlockTime = stale.Add(time.Hour)
+
+	results := []checks.Result{
+		// abandoned: all dead, three operators alive elsewhere
+		res("abandoned", "rpc_liveness", "https://rpc.opa.example", false, checks.ClassDNSNXDomain),
+		res("abandoned", "rest_liveness", "https://rest.opb.example", false, checks.ClassDNSNXDomain),
+		res("abandoned", "rpc_liveness", "https://rpc2.opc.example", false, checks.ClassTimeout),
+		// the same operators alive on livechain
+		res("livechain", "rpc_liveness", "https://a.opa.example", true, checks.ClassNone),
+		res("livechain", "rest_liveness", "https://b.opb.example", true, checks.ClassNone),
+		res("livechain", "rpc_liveness", "https://c.opc.example", true, checks.ClassNone),
+		halted1,
+		halted2,
+	}
+	var buf bytes.Buffer
+	Render(&buf, Build(results, nil, RunMeta{TS: runTS, Vantage: "test"}))
+	out := buf.String()
+
+	for _, want := range []string{
+		"chain-death candidates (heuristic, this run only",
+		"abandoned",
+		"unreachable; 3 operators serve other chains fine",
+		"haltedchain",
+		"halted: all 2 answering RPCs report a block older than 7 days",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n--- full output ---\n%s", want, out)
+		}
+	}
+	idx := strings.Index(out, "chain-death candidates")
+	if idx < 0 {
+		t.Fatal("chain-death candidates section missing")
+	}
+	if strings.Contains(out[idx:], "livechain") {
+		t.Error("healthy chain listed as a death candidate")
+	}
+}
+
 // Records written before the order field existed must not produce a first-listed line at all —
 // rendering "dead on 0 of 0 chains" from data that simply lacks the field would be a lie.
 func TestRenderSkipsFirstListedWithoutOrderData(t *testing.T) {

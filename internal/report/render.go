@@ -5,12 +5,20 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"chain-registry-sentinel/internal/checks"
 )
 
 const (
 	rulerWidth = 100
+	// blockStaleAfter: synced node reports latest_block_time older than this has stopped producing blocks. Mirrors
+	// the detection constant in cmd/sentinel; keep the two in agreement.
+	blockStaleAfter = 7 * 24 * time.Hour
+	// minWithdrawnOperators: fully-dead chains only count as death candidates when at least
+	// this many of their operators are demonstrably alive on other chains — the withdrawal
+	// signature. Below it, "all dead" cannot be told apart from "all its operators died".
+	minWithdrawnOperators = 3
 	// topDomainRows bounds the domain table; the long tail of one-endpoint domains adds noise,
 	// not signal, and the full detail is always in the JSONL.
 	topDomainRows = 25
@@ -62,6 +70,12 @@ type chainAgg struct {
 	// endpoints per registrable domain, liveness checks only — a chain whose endpoints all
 	// live on one domain is one operator decision away from unreachable.
 	domains map[string]int
+	// deadDomains: domains with at least one dead endpoint on this chain — the withdrawal
+	// signature compares these against the domain's health elsewhere.
+	deadDomains map[string]bool
+	// Halted-chain evidence: RPCs that answered (not catching up) and how many of them report
+	// a latest_block_time older than blockStaleAfter relative to the run.
+	answeringRPC, staleRPC int
 }
 
 type aggregates struct {
@@ -80,11 +94,18 @@ type aggregates struct {
 
 func (a *aggregates) dead() int { return a.endpoints - a.live }
 
+// Liveness check names the aggregation branches on.
+const (
+	checkRPCLiveness  = "rpc_liveness"
+	checkRESTLiveness = "rest_liveness"
+	checkEVMLiveness  = "evm_liveness"
+)
+
 // coreCheck reports whether the check decides chain reachability: RPC and REST for cosmos
 // chains, the EVM JSON-RPC for eip155 chains. gRPC and WSS are extras — a chain with a live
 // RPC but dead gRPC is degraded, not unreachable.
 func coreCheck(check string) bool {
-	return check == "rpc_liveness" || check == "rest_liveness" || check == "evm_liveness"
+	return check == checkRPCLiveness || check == checkRESTLiveness || check == checkEVMLiveness
 }
 
 func aggregate(records []Record) *aggregates {
@@ -122,24 +143,7 @@ func aggregate(records []Record) *aggregates {
 		d.total++
 		d.chains[r.Chain] = struct{}{}
 
-		c := a.chains[r.Chain]
-		if c == nil {
-			c = &chainAgg{domains: map[string]int{}}
-			a.chains[r.Chain] = c
-		}
-		c.domains[r.Domain]++
-		if coreCheck(r.Check) {
-			c.coreTotal++
-			if r.Passed {
-				c.coreLive++
-			}
-			// The entry a user's tooling hits by default: the first-listed RPC (EVM JSON-RPC
-			// for eip155 chains). REST order matters less; nothing defaults to the Nth entry.
-			if r.Order == 1 && (r.Check == "rpc_liveness" || r.Check == "evm_liveness") {
-				c.hasFirst = true
-				c.firstDead = !r.Passed
-			}
-		}
+		a.noteChain(r)
 
 		if r.Passed {
 			a.live++
@@ -161,9 +165,44 @@ func aggregate(records []Record) *aggregates {
 	return a
 }
 
-// vantageWarnPct is the share of failures attributable to the prober's own environment above
-// which the whole run is flagged as untrustworthy.
-const vantageWarnPct = 5.0
+// noteChain accumulates one record's chain-level facts: reachability, first-listed status,
+// per-domain footprint, and the halted-chain evidence.
+func (a *aggregates) noteChain(r *Record) {
+	c := a.chains[r.Chain]
+	if c == nil {
+		c = &chainAgg{domains: map[string]int{}, deadDomains: map[string]bool{}}
+		a.chains[r.Chain] = c
+	}
+	c.domains[r.Domain]++
+	if !r.Passed {
+		c.deadDomains[r.Domain] = true
+	}
+	if r.Check == checkRPCLiveness && r.Passed && !r.CatchingUp {
+		c.answeringRPC++
+		if t, err := time.Parse(time.RFC3339, r.LatestBlockTime); err == nil &&
+			r.RunTS.Sub(t) > blockStaleAfter {
+			c.staleRPC++
+		}
+	}
+	if coreCheck(r.Check) {
+		c.coreTotal++
+		if r.Passed {
+			c.coreLive++
+		}
+		// The entry a user's tooling hits by default: the first-listed RPC (EVM JSON-RPC
+		// for eip155 chains). REST order matters less; nothing defaults to the Nth entry.
+		if r.Order == 1 && (r.Check == checkRPCLiveness || r.Check == checkEVMLiveness) {
+			c.hasFirst = true
+			c.firstDead = !r.Passed
+		}
+	}
+}
+
+// VantageWarnPct is the share of failures attributable to the prober's own environment above
+// which the whole run is flagged as untrustworthy. Exported because chain-death detection uses
+// the same predicate: a run this suspect must not advance or reset chain-death streaks — a
+// broken resolver manufactures "every chain unreachable" in a single run.
+const VantageWarnPct = 5.0
 
 // renderVantageWarning is the report diagnosing its own measurement. dns_failure and
 // vantage_no_route are signatures of a broken vantage — a flaky resolver, a missing IPv6 route —
@@ -173,7 +212,7 @@ const vantageWarnPct = 5.0
 // quoted from a bad vantage.
 func renderVantageWarning(w io.Writer, a *aggregates) {
 	suspect := a.classes[checks.ClassDNSFailure] + a.classes[checks.ClassVantageNoRoute]
-	if suspect == 0 || pct(suspect, a.dead()) < vantageWarnPct {
+	if suspect == 0 || pct(suspect, a.dead()) < VantageWarnPct {
 		return
 	}
 	section(w, "WARNING: this vantage looks unhealthy — treat every number below as suspect")
@@ -369,6 +408,48 @@ func renderChains(w io.Writer, a *aggregates) {
 	renderNoCore(w, a)
 	renderFirstListed(w, a)
 	renderSingleDomain(w, a)
+	renderDeathCandidates(w, a)
+}
+
+// renderDeathCandidates lists chains matching either chain-death signature in this single run:
+// unreachable with healthy operators withdrawn, or halted (every answering, synced RPC frozen
+// past blockStaleAfter). Single-run view, labeled heuristic — the PR flow additionally requires
+// the signal to persist across --chain-death-min-runs runs before proposing a status flip.
+func renderDeathCandidates(w io.Writer, a *aggregates) {
+	type cand struct{ name, why string }
+	var cands []cand
+	for name, c := range a.chains {
+		withdrawn := 0
+		for d := range c.deadDomains {
+			if dom := a.domains[d]; dom != nil && dom.live > 0 {
+				withdrawn++
+			}
+		}
+		// Adaptive threshold, mirroring chainLooksDead in cmd/sentinel: min(3, operator count)
+		// with a floor of 2 — small chains need every witness, one witness is never enough.
+		needed := minWithdrawnOperators
+		if n := len(c.deadDomains); n < needed {
+			needed = n
+		}
+		if needed < 2 {
+			needed = 2
+		}
+		switch {
+		case c.coreTotal > 0 && c.coreLive == 0 && withdrawn >= needed:
+			cands = append(cands, cand{name, fmt.Sprintf("unreachable; %d operators serve other chains fine", withdrawn)})
+		case c.answeringRPC > 0 && c.staleRPC == c.answeringRPC:
+			cands = append(cands, cand{name, fmt.Sprintf("halted: all %d answering RPCs report a block older than 7 days", c.answeringRPC)})
+		}
+	}
+	if len(cands) == 0 {
+		return
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].name < cands[j].name })
+	fmt.Fprintf(w, "\nchain-death candidates (heuristic, this run only — a status-flip PR additionally requires\n"+
+		"the signal to persist across runs): %d\n", len(cands))
+	for _, c := range cands {
+		fmt.Fprintf(w, "  %-24s %s\n", c.name, c.why)
+	}
 }
 
 // renderNoCore names chains that list no RPC, REST or EVM endpoint at all. They are excluded

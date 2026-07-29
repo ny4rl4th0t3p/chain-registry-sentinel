@@ -28,6 +28,44 @@ func rpcStatusHandler(network string) http.HandlerFunc {
 	}
 }
 
+// rpcStatusWithSyncHandler serves a /status payload carrying sync_info, the source of the
+// catching_up and latest_block_time quality fields.
+func rpcStatusWithSyncHandler(network string, catchingUp bool, blockTime time.Time) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		//nolint:errcheck // test server
+		json.NewEncoder(w).Encode(map[string]any{
+			"result": map[string]any{
+				"node_info": map[string]any{"network": network},
+				"sync_info": map[string]any{
+					"catching_up":       catchingUp,
+					"latest_block_time": blockTime.Format(time.RFC3339Nano),
+				},
+			},
+		})
+	}
+}
+
+func TestRPCLiveness_ParsesSyncInfo(t *testing.T) {
+	blockTime := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(rpcStatusWithSyncHandler("testchain-1", true, blockTime))
+	defer srv.Close()
+
+	r := checks.NewRPCLiveness().Evaluate(probeChain(t, srv))
+	if !r.Passed {
+		t.Fatalf("want pass, got evidence: %s", r.Evidence)
+	}
+	if !r.CatchingUp {
+		t.Error("CatchingUp not parsed")
+	}
+	if !r.LatestBlockTime.Equal(blockTime) {
+		t.Errorf("LatestBlockTime = %v, want %v — chain-death detection depends on this field", r.LatestBlockTime, blockTime)
+	}
+}
+
 func probeChain(t *testing.T, srv *httptest.Server) checks.EndpointProbe {
 	t.Helper()
 	chain := registry.Chain{

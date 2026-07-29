@@ -94,21 +94,24 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
 
 ### All inputs
 
-| Input              | Default  | Description                                                                                      |
-|--------------------|----------|--------------------------------------------------------------------------------------------------|
-| `registry`         | `.`      | Path to a local chain-registry clone, relative to the workspace.                                 |
-| `chains`           | `all`    | Comma-separated chain names to check, or `all`.                                                  |
-| `timeout`          | `60s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
-| `concurrency`      | `16`     | Maximum simultaneous endpoint probes. See the DNS note below before raising it.                  |
-| `state-path`       | _(none)_ | Directory for per-chain state files. Use when managing persistence externally.                   |
-| `reset-state`      | `false`  | Start unreadable state files from scratch instead of failing the step.                           |
-| `state-branch`     | _(none)_ | Branch to persist state automatically (created on first push).                                   |
-| `min-failures`     | `14`     | Consecutive failing **runs** before an endpoint is flagged.                                      |
-| `dry-run`          | `false`  | Report and show would-be PRs, but write nothing and open nothing.                                |
-| `github-token`     | _(none)_ | Token with `contents: write` and `pull-requests: write`. Needed for PRs and `state-branch`.      |
-| `max-new-prs`      | `5`      | Maximum **new endpoint-removal PRs** opened per run. Does not apply to hash PRs.                 |
-| `pr-cooldown-days` | `7`      | Minimum days since the last PR was **opened** for a chain before another may open. `0` disables. |
-| `verbose`          | `false`  | Enable debug logging to stderr.                                                                  |
+| Input                     | Default  | Description                                                                                      |
+|---------------------------|----------|--------------------------------------------------------------------------------------------------|
+| `registry`                | `.`      | Path to a local chain-registry clone, relative to the workspace.                                 |
+| `chains`                  | `all`    | Comma-separated chain names to check, or `all`.                                                  |
+| `timeout`                 | `60s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
+| `concurrency`             | `16`     | Maximum simultaneous endpoint probes. See the DNS note below before raising it.                  |
+| `state-path`              | _(none)_ | Directory for per-chain state files. Use when managing persistence externally.                   |
+| `reset-state`             | `false`  | Start unreadable state files from scratch instead of failing the step.                           |
+| `state-branch`            | _(none)_ | Branch to persist state automatically (created on first push).                                   |
+| `min-failures`            | `14`     | Consecutive failing **runs** before an endpoint is flagged.                                      |
+| `chain-death-min-runs`    | `14`     | Consecutive dead-looking **runs** before a chain status-flip PR. See PR behaviour.               |
+| `chain-death-stale-after` | `168h`   | Newest-block age before an answering chain counts as halted. Raise it during a known recovery.   |
+| `max-status-prs`          | `3`      | Maximum new chain status-flip PRs per run.                                                       |
+| `dry-run`                 | `false`  | Report and show would-be PRs, but write nothing and open nothing.                                |
+| `github-token`            | _(none)_ | Token with `contents: write` and `pull-requests: write`. Needed for PRs and `state-branch`.      |
+| `max-new-prs`             | `5`      | Maximum **new endpoint-removal PRs** opened per run. Does not apply to hash PRs.                 |
+| `pr-cooldown-days`        | `7`      | Minimum days since the last PR was **opened** for a chain before another may open. `0` disables. |
+| `verbose`                 | `false`  | Enable debug logging to stderr.                                                                  |
 
 ### Input details
 
@@ -119,14 +122,14 @@ sentinel step after it), this is `.`.
 are skipped. Names not found in the registry are warned about at the end of the run. The filter applies to every check,
 including the IBC denom hash check.
 
-**`concurrency`** — applies to endpoint probes only; hash checks are local and run synchronously after probing.
-The default is deliberately conservative: every probe fires A and AAAA DNS lookups, and a large burst overruns
-dnsmasq-class forwarders (default limit: 150 in-flight queries) — home routers, container stub resolvers, VM NAT
-chains. An overloaded resolver does not just slow the run down, it corrupts the results: dropped lookups surface as
-DNS failures and even false NXDOMAINs for healthy endpoints. In one measured case, concurrency 250 behind a VM's
-dnsmasq halved the number of endpoints reported live. Raise this only on infrastructure whose resolver chain you
-trust (measured fine on GitHub-hosted runners), and treat a nonzero `dns_failure`/`vantage_no_route` count in the
-report as the signal to lower it.
+**`concurrency`** — applies to endpoint probes only; hash checks are local and run synchronously after probing. The
+default is deliberately conservative: every probe fires A and AAAA DNS lookups, and a large burst overruns dnsmasq-class
+forwarders (default limit: 150 in-flight queries) — home routers, container stub resolvers, VM NAT chains. An overloaded
+resolver does not just slow the run down, it corrupts the results: dropped lookups surface as DNS failures and even
+false NXDOMAINs for healthy endpoints. In one measured case, concurrency 250 behind a VM's dnsmasq halved the number of
+endpoints reported live. Raise this only on infrastructure whose resolver chain you trust (measured fine on
+GitHub-hosted runners), and treat a nonzero `dns_failure`/`vantage_no_route` count in the report as the signal to lower
+it.
 
 **`state-path`** — holds one JSON state file per chain (failure streaks, PR timestamps). **If neither `state-path` nor
 `state-branch` is set, there is no state**: endpoints are probed and problems are reported in the log, but nothing is
@@ -176,6 +179,34 @@ Nothing is absorbed or rewritten in between — the step outcome is exactly the 
 - Branch names follow the pattern `sentinel/{chain}-{N}` where N increments each time. Branches are never deleted by the
   sentinel.
 - PRs are labelled `sentinel` and `automated` (both created automatically if missing).
+
+### Dead-chain detection
+
+Sometimes the dead thing is the chain, not its endpoints — and then the right fix is flipping the chain's `status` from
+`live` to `killed` in `chain.json` (one line, schema-supported, corrects every downstream consumer at once) rather than
+deleting dozens of endpoints one by one.
+
+A chain counts as dead-looking in a run when either signature holds:
+
+- **abandoned** — zero live RPC/REST/EVM endpoints, while its operators are demonstrably alive on other chains:
+  three of them for normal chains, every one of them for chains with fewer than three operators (never fewer than
+  two — one witness is an anecdote, so single-operator chains can only be caught by the halted signature). Healthy
+  operators deleting their records for one specific chain is deliberate withdrawal, not an outage.
+- **halted** — nodes still answer, but every synced one reports a `latest_block_time` older than
+  `chain-death-stale-after` (default 7 days). The survivors are answering about a chain that stopped advancing.
+  Working through a known outage or disaster recovery? Raise this above the expected downtime and the halt never
+  starts a death streak. The two dials also stack: even at the default, a halt only yields a PR after it *also*
+  persists for `chain-death-min-runs` runs — a 10-day recovery at daily cadence never reaches the default 14.
+
+Only after `chain-death-min-runs` consecutive dead-looking runs does the sentinel open a PR flipping the status, with
+all the evidence in the body: the streak duration, per-check failure summary, the operators that withdrew (with their
+live counts elsewhere), the newest observed block time, and a one-line way to verify. At most `max-status-prs` open
+per run (default 3); a chain flagged for a status PR is excluded from endpoint-removal and hash-fix PRs that run — no
+point grooming a chain that is about to be marked killed.
+
+Two safety rules: streaks freeze entirely on runs whose failures look vantage-caused (a broken resolver would otherwise
+make every chain look dead at once), and a chain's streak only moves on runs where its core checks actually executed. As
+everywhere else: the evidence is machine-gathered, and the maintainer reviewing the PR is the human check.
 
 ### IBC denom hash check
 
@@ -257,9 +288,9 @@ that take days to rebuild while the run still finishes normally. Fix or delete t
 
 Every run ends with an aggregate report on stdout: failure classes split into *structural* (provably broken regardless
 of how the probe behaved — DNS gone, TLS broken, the server itself answering that nothing is there) versus *ambiguous*
-(timeouts, throttling, blocks — anything an aggressive or badly-networked prober could have caused itself), a
-per-domain live/dead table, a remedy taxonomy for fully dead domains, chain reachability, and node quality. No
-post-processing needed — run it, read it.
+(timeouts, throttling, blocks — anything an aggressive or badly-networked prober could have caused itself), a per-domain
+live/dead table, a remedy taxonomy for fully dead domains, chain reachability, and node quality. No post-processing
+needed — run it, read it.
 
 If the report opens with a **vantage health warning**, believe it: the failures are dominated by classes that describe
 the probing machine (a failing resolver, a missing IPv6 route), and nothing in that run — including the structural
@@ -279,9 +310,9 @@ counts — should be quoted. Fix the machine's DNS or routing, or lower `concurr
 `--vantage` label. The label exists so runs from different networks can be told apart later — a home connection and a
 datacenter are different measurements of the same registry.
 
-Probes identify themselves: the default User-Agent is `chain-registry-sentinel/<version>` with a
-link to this repository, so endpoint operators see a specific string to allowlist (or a place to
-complain) instead of a generic Go client. Override with `--user-agent`.
+Probes identify themselves: the default User-Agent is `chain-registry-sentinel/<version>` with a link to this
+repository, so endpoint operators see a specific string to allowlist (or a place to complain) instead of a generic Go
+client. Override with `--user-agent`.
 
 `--from <file>` renders the report from one previously saved run instead of probing. It takes the file, not its
 directory, on purpose: the report should be traceable to exactly one named input, never to whichever file an implicit
