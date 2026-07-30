@@ -45,7 +45,8 @@ type CLI struct {
 	DryRun               bool             `help:"Read state but do not write it or open PRs" env:"INPUT_DRY_RUN"`
 	GithubToken          string           `help:"GitHub token for opening PRs" env:"INPUT_GITHUB_TOKEN"`
 	GithubRepo           string           `help:"Target repo (owner/repo)" env:"INPUT_GITHUB_REPO"`
-	MaxNewPRs            int              `help:"Max new PRs per run" env:"INPUT_MAX_NEW_PRS" default:"5"`
+	MaxEndpointPRs       int              `help:"Max new endpoint-removal PRs per run (0 disables)" env:"INPUT_MAX_ENDPOINT_PRS" default:"5"`
+	MaxHashPRs           int              `help:"Max new IBC hash-fix PRs per run (0 disables)" env:"INPUT_MAX_HASH_PRS" default:"5"`
 	PRCooldownDays       int              `help:"Days between PRs per chain" env:"INPUT_PR_COOLDOWN_DAYS" default:"7"`
 	Report               string           `help:"Directory to write this run's JSONL records into (one file per run)" env:"INPUT_REPORT"`
 	Vantage              string           `help:"Label stamped into every record to compare runs across networks" env:"INPUT_VANTAGE"`
@@ -901,7 +902,7 @@ func maybeOpenPRs(
 			return
 		}
 	}
-	maxNew := cli.MaxNewPRs
+	maxNew := cli.MaxEndpointPRs
 	cooldown := time.Duration(cli.PRCooldownDays) * 24 * time.Hour
 	flagged := collectFlagged(stateMap, cli.MinFailures)
 	for name := range exclude {
@@ -1044,6 +1045,7 @@ func maybeOpenHashPRs(
 	if !cli.DryRun {
 		ghClient = github.NewClient(token)
 	}
+	opened := 0
 	for i := range chains {
 		ch := chains[i]
 		if exclude[ch.Name] {
@@ -1053,8 +1055,13 @@ func maybeOpenHashPRs(
 		if len(mm) == 0 {
 			continue
 		}
+		if opened >= cli.MaxHashPRs {
+			slog.Warn("hash-fix PR cap reached; remaining chains wait for the next run", "cap", cli.MaxHashPRs)
+			break
+		}
 		cs := stateMap[ch.Name]
 		if tryOpenHashPR(ctx, ghClient, ch.Name, mm, cs, cooldown, owner, repoName, cli.Registry, now, cli.DryRun) {
+			opened++
 			if !cli.DryRun {
 				cs.LastHashPROpenedAt = now
 				stateMap[ch.Name] = cs

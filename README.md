@@ -109,7 +109,8 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
 | `max-status-prs`          | `3`      | Maximum new chain status-flip PRs per run.                                                       |
 | `dry-run`                 | `false`  | Report and show would-be PRs, but write nothing and open nothing.                                |
 | `github-token`            | _(none)_ | Token with `contents: write` and `pull-requests: write`. Needed for PRs and `state-branch`.      |
-| `max-new-prs`             | `5`      | Maximum **new endpoint-removal PRs** opened per run. Does not apply to hash PRs.                 |
+| `max-endpoint-prs`        | `5`      | Maximum new **endpoint-removal PRs** opened per run. `0` disables the flow.                      |
+| `max-hash-prs`            | `5`      | Maximum new **IBC hash-fix PRs** opened per run. `0` disables the flow.                          |
 | `pr-cooldown-days`        | `7`      | Minimum days since the last PR was **opened** for a chain before another may open. `0` disables. |
 | `verbose`                 | `false`  | Enable debug logging to stderr.                                                                  |
 
@@ -151,8 +152,10 @@ Would-be PRs are printed as `DRY-RUN:` lines. No token needed.
 **`github-token`** — only needed to open PRs and to push `state-branch`. A report-only or dry-run setup works without
 it. `GITHUB_REPOSITORY` is injected by the runner: PRs always target the repository the workflow runs in.
 
-**`max-new-prs`** — a per-run ceiling on newly opened endpoint-removal PRs; chains beyond it wait for a later run. It
-does **not** bound the total number of simultaneously open PRs, and hash-fix PRs are not counted against it.
+**`max-endpoint-prs` / `max-hash-prs` / `max-status-prs`** — per-run ceilings on newly opened PRs, one per PR type;
+chains beyond a cap wait for a later run. They do **not** bound the total number of simultaneously open PRs, and the
+pools are independent — a run at the endpoint cap can still open hash-fix and status-flip PRs. Setting a cap to `0`
+turns that PR flow off entirely, which is how a scheduled workflow is scoped to a single PR type.
 
 **`pr-cooldown-days`** — measured from when the last sentinel PR for that chain was opened, and tracked separately for
 endpoint-removal and hash-fix PRs. In practice this governs how soon a *closed* (rejected) PR may be re-proposed — an
@@ -189,20 +192,20 @@ deleting dozens of endpoints one by one.
 A chain counts as dead-looking in a run when either signature holds:
 
 - **abandoned** — zero live RPC/REST/EVM endpoints, while its operators are demonstrably alive on other chains:
-  three of them for normal chains, every one of them for chains with fewer than three operators (never fewer than
-  two — one witness is an anecdote, so single-operator chains can only be caught by the halted signature). Healthy
-  operators deleting their records for one specific chain is deliberate withdrawal, not an outage.
+  three of them for normal chains, every one of them for chains with fewer than three operators (never fewer than two —
+  one witness is an anecdote, so single-operator chains can only be caught by the halted signature). Healthy operators
+  deleting their records for one specific chain is deliberate withdrawal, not an outage.
 - **halted** — nodes still answer, but every synced one reports a `latest_block_time` older than
-  `chain-death-stale-after` (default 7 days). The survivors are answering about a chain that stopped advancing.
-  Working through a known outage or disaster recovery? Raise this above the expected downtime and the halt never
-  starts a death streak. The two dials also stack: even at the default, a halt only yields a PR after it *also*
+  `chain-death-stale-after` (default 7 days). The survivors are answering about a chain that stopped advancing. Working
+  through a known outage or disaster recovery? Raise this above the expected downtime and the halt never starts a death
+  streak. The two dials also stack: even at the default, a halt only yields a PR after it *also*
   persists for `chain-death-min-runs` runs — a 10-day recovery at daily cadence never reaches the default 14.
 
 Only after `chain-death-min-runs` consecutive dead-looking runs does the sentinel open a PR flipping the status, with
 all the evidence in the body: the streak duration, per-check failure summary, the operators that withdrew (with their
-live counts elsewhere), the newest observed block time, and a one-line way to verify. At most `max-status-prs` open
-per run (default 3); a chain flagged for a status PR is excluded from endpoint-removal and hash-fix PRs that run — no
-point grooming a chain that is about to be marked killed.
+live counts elsewhere), the newest observed block time, and a one-line way to verify. At most `max-status-prs` open per
+run (default 3); a chain flagged for a status PR is excluded from endpoint-removal and hash-fix PRs that run — no point
+grooming a chain that is about to be marked killed.
 
 Two safety rules: streaks freeze entirely on runs whose failures look vantage-caused (a broken resolver would otherwise
 make every chain look dead at once), and a chain's streak only moves on runs where its core checks actually executed. As

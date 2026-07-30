@@ -40,8 +40,11 @@ inputs:
     default: 'false'
   github-token:
     description: 'GitHub token with contents:write and pull-requests:write on the registry repo'
-  max-new-prs:
-    description: 'Maximum new PRs to open per run'
+  max-endpoint-prs:
+    description: 'Max new endpoint-removal PRs per run (0 disables)'
+    default: '5'
+  max-hash-prs:
+    description: 'Max new IBC hash-fix PRs per run (0 disables)'
     default: '5'
   pr-cooldown-days:
     description: 'Minimum days between consecutive PRs for the same chain'
@@ -68,7 +71,8 @@ runs:
     INPUT_MAX_STATUS_PRS: ${{ inputs.max-status-prs }}
     INPUT_DRY_RUN: ${{ inputs.dry-run }}
     INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
-    INPUT_MAX_NEW_PRS: ${{ inputs.max-new-prs }}
+    INPUT_MAX_ENDPOINT_PRS: ${{ inputs.max-endpoint-prs }}
+    INPUT_MAX_HASH_PRS: ${{ inputs.max-hash-prs }}
     INPUT_PR_COOLDOWN_DAYS: ${{ inputs.pr-cooldown-days }}
     INPUT_STATE_BRANCH: ${{ inputs.state-branch }}
     INPUT_VERBOSE: ${{ inputs.verbose }}
