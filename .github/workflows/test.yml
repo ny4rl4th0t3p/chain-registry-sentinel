@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          # Track the version the module declares rather than a floating "stable", so a Go
+          # release cannot change CI's behaviour without a go.mod change.
+          go-version-file: go.mod
+      - run: make test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # action.yml consumers build this Dockerfile at run time, and the release pipeline
+      # publishes it — but nothing else in CI compiles it. Build without pushing so a broken
+      # Dockerfile fails here rather than at release, or in a user's scheduled run.
+      - run: docker build --build-arg VERSION=ci .

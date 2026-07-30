@@ -1,0 +1,8 @@
+.*
+!.docker
+tmp
+local-state
+bin
+dist
+*.log
+*.md
