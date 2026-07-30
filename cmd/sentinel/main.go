@@ -417,9 +417,10 @@ func loadFilteredChains(cli CLI) (chains []registry.Chain, missing []string) {
 	return chains, missingFromRegistry(filter, chains)
 }
 
-// openPRFlows dispatches the three PR flows in order. A chain getting a status-flip PR is
-// excluded from the per-endpoint flows: deleting endpoints or fixing hashes on a chain about
-// to be marked killed is noise.
+// openPRFlows dispatches the three PR flows in order. A chain that looks dead this run —
+// matured status candidate or not — is excluded from the per-endpoint flows: an endpoint or
+// hash PR on a dying chain is noise, and one opened during the maturing window would sit next
+// to the status-flip PR that later supersedes it.
 func openPRFlows(
 	cli CLI,
 	chains []registry.Chain,
@@ -428,20 +429,17 @@ func openPRFlows(
 	stateMap map[string]state.ChainState,
 	flagged int,
 	deathCandidates []string,
+	looksDead map[string]bool,
 	deathFacts map[string]*chainDeathFacts,
 	domainLive map[string]int,
 	now time.Time,
 ) {
-	exclude := make(map[string]bool, len(deathCandidates))
-	for _, name := range deathCandidates {
-		exclude[name] = true
-	}
 	maybeOpenStatusPRs(cli, deathCandidates, deathFacts, domainLive, stateMap, now)
 	if flagged > 0 {
 		fmt.Printf("%d endpoint(s) flagged for action\n", flagged)
-		maybeOpenPRs(cli, chains, jobs, client, stateMap, now, exclude)
+		maybeOpenPRs(cli, chains, jobs, client, stateMap, now, looksDead)
 	}
-	maybeOpenHashPRs(cli, chains, stateMap, now, exclude)
+	maybeOpenHashPRs(cli, chains, stateMap, now, looksDead)
 }
 
 // missingFromRegistry returns the --chains entries that matched no loaded chain, so they can be
@@ -1127,13 +1125,15 @@ func main() {
 	now := time.Now().UTC()
 	flagged := 0
 	var deathCandidates []string
+	var looksDead map[string]bool
 	var deathFacts map[string]*chainDeathFacts
 	var domainLive map[string]int
 	if cli.StatePath != "" {
 		activeKeys := buildActiveLivenessKeys(jobs)
 		flagged = updateState(stateMap, results, activeKeys, cli.MinFailures, now)
 		// Before the save, so the chain-death streaks persist with the endpoint streaks.
-		deathCandidates, deathFacts, domainLive = runChainDeathDetection(results, stateMap, cli.ChainDeathMinRuns, cli.ChainDeathStaleAfter, now)
+		deathCandidates, looksDead, deathFacts, domainLive = runChainDeathDetection(
+			results, stateMap, cli.ChainDeathMinRuns, cli.ChainDeathStaleAfter, now)
 		if !cli.DryRun {
 			saveStateMap(stateMap, cli.StatePath, now)
 		}
@@ -1141,7 +1141,7 @@ func main() {
 
 	printSummary(perChain, keys)
 	emitReport(cli, results, stateMap, now)
-	openPRFlows(cli, chains, jobs, client, stateMap, flagged, deathCandidates, deathFacts, domainLive, now)
+	openPRFlows(cli, chains, jobs, client, stateMap, flagged, deathCandidates, looksDead, deathFacts, domainLive, now)
 
 	for _, name := range missingChains {
 		slog.Warn("chain not found in registry", "chain", name, "hint", "no chain.json — may be EVM-only or unlisted")

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -544,5 +545,40 @@ func OpenStatusPR(ctx context.Context, client *Client, req StatusPRRequest) (str
 	if err := client.AddLabels(ctx, req.Owner, req.Repo, prNum, []string{labelSentinel, labelAutomated}); err != nil {
 		return "", fmt.Errorf("OpenStatusPR: %w", err)
 	}
+	notifySuperseded(ctx, client, req.Owner, req.Repo, req.ChainName, prNum)
 	return prURL, nil
+}
+
+// notifySuperseded comments on any open sentinel endpoint-removal or hash-fix PR for the
+// chain, pointing at the status-flip PR that supersedes them. It informs; it never closes —
+// closing is the maintainers' call, and an automation deleting PRs could collide with their
+// own processes. Best-effort: the status PR is already open, so a failure here must not fail
+// the flow; it surfaces as a warning instead.
+func notifySuperseded(ctx context.Context, client *Client, owner, repo, chain string, statusPRNum int) {
+	titles := []string{
+		"[sentinel] remove dead endpoints: " + chain,
+		"[sentinel] fix IBC denom hash: " + chain,
+	}
+	for _, title := range titles {
+		num, found, err := client.FindOpenPR(ctx, owner, repo, title)
+		if err != nil {
+			slog.Warn("supersession notice: PR search failed", "title", title, "err", err)
+			continue
+		}
+		if !found {
+			continue
+		}
+		if err := client.AddComment(ctx, owner, repo, num, BuildSupersededComment(chain, statusPRNum)); err != nil {
+			slog.Warn("supersession notice: comment failed", "pr", num, "err", err)
+		}
+	}
+}
+
+// BuildSupersededComment is the notice posted on an open fix PR once a status-flip PR exists
+// for the same chain.
+func BuildSupersededComment(chain string, statusPRNum int) string {
+	return fmt.Sprintf("The sentinel has opened #%d proposing to mark `%s` as `killed` — the whole chain now "+
+		"looks dead, not just the entries fixed here. If #%d merges, this PR is superseded and can be closed. "+
+		"(Automated notice; the sentinel never closes PRs itself.)",
+		statusPRNum, chain, statusPRNum)
 }

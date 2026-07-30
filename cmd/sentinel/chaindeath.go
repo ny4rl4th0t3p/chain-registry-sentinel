@@ -161,33 +161,41 @@ func chainLooksDead(f *chainDeathFacts, domainLive map[string]int) bool {
 }
 
 // runChainDeathDetection updates per-chain death streaks in state and returns the chains whose
-// streak has reached minRuns, ready for a status PR. It refuses to move any streak when the
-// vantage is suspect (guard 1), and per chain when no core check ran (guard 2 — the same trap
-// as endpoint-state pruning under a future --checks selector, pre-empted here).
+// streak has reached minRuns, ready for a status PR. looksDead holds every chain that looks
+// dead this run, matured or not — the per-endpoint PR flows exclude those, because a chain in
+// the maturing window would otherwise get an endpoint-removal PR that deletes every core
+// endpoint: a death certificate filed under the wrong title. It refuses to move any streak
+// when the vantage is suspect (guard 1), and per chain when no core check ran (guard 2 — the
+// same trap as endpoint-state pruning under a future --checks selector, pre-empted here).
 func runChainDeathDetection(
 	results []checks.Result,
 	stateMap map[string]state.ChainState,
 	minRuns int,
 	staleAfter time.Duration,
 	now time.Time,
-) (candidates []string, facts map[string]*chainDeathFacts, domainLive map[string]int) {
+) (candidates []string, looksDead map[string]bool, facts map[string]*chainDeathFacts, domainLive map[string]int) {
 	if stateMap == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if vantageSuspect(results) {
 		slog.Warn("vantage looks unhealthy; chain-death streaks frozen this run")
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	facts, domainLive = buildChainDeathFacts(results, now, staleAfter)
+	looksDead = make(map[string]bool)
 	for name, f := range facts {
 		if f.coreTotal == 0 {
 			continue
+		}
+		dead := chainLooksDead(f, domainLive)
+		if dead {
+			looksDead[name] = true
 		}
 		cs, ok := stateMap[name]
 		if !ok {
 			continue
 		}
-		if chainLooksDead(f, domainLive) {
+		if dead {
 			if cs.ChainDeadStreak == 0 {
 				cs.ChainDeadFirstTime = now
 			}
@@ -202,7 +210,7 @@ func runChainDeathDetection(
 		}
 	}
 	sort.Strings(candidates)
-	return candidates, facts, domainLive
+	return candidates, looksDead, facts, domainLive
 }
 
 // buildStatusEvidence assembles the PR body's evidence from this run's facts and the streak.

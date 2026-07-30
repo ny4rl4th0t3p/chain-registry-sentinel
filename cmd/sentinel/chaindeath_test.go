@@ -45,10 +45,14 @@ func TestChainDeathStreakAdvancesAndMatures(t *testing.T) {
 	stateMap := stateFor("deadchain", "alivechain")
 	results := deadChainResults()
 
-	// Run 1: streak starts, no candidate yet.
-	candidates, _, _ := runChainDeathDetection(results, stateMap, 2, testStale, deathNow)
+	// Run 1: streak starts, no candidate yet — but the chain already counts as looking dead,
+	// which keeps the per-endpoint PR flows away during the maturing window.
+	candidates, looksDead, _, _ := runChainDeathDetection(results, stateMap, 2, testStale, deathNow)
 	if len(candidates) != 0 {
 		t.Fatalf("run 1: no candidate expected, got %v", candidates)
+	}
+	if !looksDead["deadchain"] || looksDead["alivechain"] {
+		t.Fatalf("run 1: looksDead must hold deadchain only, got %v", looksDead)
 	}
 	if cs := stateMap["deadchain"]; cs.ChainDeadStreak != 1 || cs.ChainDeadFirstTime.IsZero() {
 		t.Fatalf("run 1: streak = %d, firstTime zero=%v; want 1, false", cs.ChainDeadStreak, cs.ChainDeadFirstTime.IsZero())
@@ -58,7 +62,7 @@ func TestChainDeathStreakAdvancesAndMatures(t *testing.T) {
 	}
 
 	// Run 2: matures.
-	candidates, facts, domainLive := runChainDeathDetection(results, stateMap, 2, testStale, deathNow.Add(24*time.Hour))
+	candidates, _, facts, domainLive := runChainDeathDetection(results, stateMap, 2, testStale, deathNow.Add(24*time.Hour))
 	if len(candidates) != 1 || candidates[0] != "deadchain" {
 		t.Fatalf("run 2: want [deadchain], got %v", candidates)
 	}
@@ -84,7 +88,7 @@ func TestChainDeathStreakResetsOnRecovery(t *testing.T) {
 	results[0].Passed = true
 	results[0].FailureClass = checks.ClassNone
 
-	if candidates, _, _ := runChainDeathDetection(results, stateMap, 2, testStale, deathNow); len(candidates) != 0 {
+	if candidates, _, _, _ := runChainDeathDetection(results, stateMap, 2, testStale, deathNow); len(candidates) != 0 {
 		t.Fatalf("recovered chain must not be a candidate, got %v", candidates)
 	}
 	if cs := stateMap["deadchain"]; cs.ChainDeadStreak != 0 || !cs.ChainDeadFirstTime.IsZero() {
@@ -121,9 +125,12 @@ func TestChainDeathFrozenOnSuspectVantage(t *testing.T) {
 			results[i].FailureClass = checks.ClassDNSFailure // resolver-side signature
 		}
 	}
-	candidates, _, _ := runChainDeathDetection(results, stateMap, 1, testStale, deathNow)
+	candidates, looksDead, _, _ := runChainDeathDetection(results, stateMap, 1, testStale, deathNow)
 	if candidates != nil {
 		t.Fatalf("suspect vantage must yield no candidates, got %v", candidates)
+	}
+	if looksDead != nil {
+		t.Fatalf("suspect vantage must not mark chains as looking dead, got %v", looksDead)
 	}
 	if cs := stateMap["deadchain"]; cs.ChainDeadStreak != 7 {
 		t.Errorf("streak must be frozen on suspect vantage, got %d (want 7)", cs.ChainDeadStreak)
@@ -223,7 +230,7 @@ func TestChainDeathDetectsHaltedChain(t *testing.T) {
 	r2 := livenessResult("haltedchain", "rpc_liveness", "https://rpc-2.halted.example", true, checks.ClassNone)
 	r2.LatestBlockTime = stale.Add(time.Hour)
 
-	candidates, facts, _ := runChainDeathDetection([]checks.Result{r1, r2}, stateMap, 1, testStale, deathNow)
+	candidates, _, facts, _ := runChainDeathDetection([]checks.Result{r1, r2}, stateMap, 1, testStale, deathNow)
 	if len(candidates) != 1 || candidates[0] != "haltedchain" {
 		t.Fatalf("want [haltedchain], got %v", candidates)
 	}
@@ -234,7 +241,7 @@ func TestChainDeathDetectsHaltedChain(t *testing.T) {
 	// One fresh node breaks the halted signature: the chain advances somewhere.
 	r2.LatestBlockTime = deathNow.Add(-time.Minute)
 	stateMap = stateFor("haltedchain")
-	if candidates, _, _ := runChainDeathDetection([]checks.Result{r1, r2}, stateMap, 1, testStale, deathNow); len(candidates) != 0 {
+	if candidates, _, _, _ := runChainDeathDetection([]checks.Result{r1, r2}, stateMap, 1, testStale, deathNow); len(candidates) != 0 {
 		t.Fatalf("one fresh node must clear the halted signature, got %v", candidates)
 	}
 }

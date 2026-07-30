@@ -447,3 +447,18 @@ func TestBuildStatusPRBody(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSupersededComment(t *testing.T) {
+	body := github.BuildSupersededComment("evmos", 41)
+	for _, want := range []string{
+		"#41",
+		"`evmos`",
+		"`killed`",
+		"can be closed",
+		"never closes PRs",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("comment missing %q\n--- comment ---\n%s", want, body)
+		}
+	}
+}

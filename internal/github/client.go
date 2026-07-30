@@ -148,6 +148,43 @@ func (c *Client) HasOpenPR(ctx context.Context, owner, repo, titleFragment strin
 	return dest.TotalCount > 0, nil
 }
 
+// FindOpenPR returns the number of an open sentinel PR whose title contains titleFragment,
+// or found=false when there is none. Same search as HasOpenPR, but captures the number so
+// the caller can act on the PR (e.g. post a supersession notice).
+func (c *Client) FindOpenPR(ctx context.Context, owner, repo, titleFragment string) (number int, found bool, err error) {
+	q := fmt.Sprintf(`repo:%s/%s is:pr is:open label:sentinel %q in:title`, owner, repo, titleFragment)
+	var dest struct {
+		Items []struct {
+			Number int `json:"number"`
+		} `json:"items"`
+	}
+	status, err := c.do(ctx, http.MethodGet, "/search/issues?q="+url.QueryEscape(q), nil, &dest)
+	if err != nil {
+		return 0, false, fmt.Errorf("github.FindOpenPR: %w", err)
+	}
+	if status != http.StatusOK {
+		return 0, false, fmt.Errorf("github.FindOpenPR: unexpected status %d", status)
+	}
+	if len(dest.Items) == 0 {
+		return 0, false, nil
+	}
+	return dest.Items[0].Number, true, nil
+}
+
+// AddComment posts an issue comment on a PR.
+func (c *Client) AddComment(ctx context.Context, owner, repo string, number int, body string) error {
+	reqBody := map[string]string{"body": body}
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+	status, err := c.do(ctx, http.MethodPost, path, reqBody, nil)
+	if err != nil {
+		return fmt.Errorf("github.AddComment: %w", err)
+	}
+	if status != http.StatusCreated {
+		return fmt.Errorf("github.AddComment: unexpected status %d", status)
+	}
+	return nil
+}
+
 // GetFileSHA returns the decoded content and blob SHA of a file at the given branch.
 func (c *Client) GetFileSHA(ctx context.Context, owner, repo, path, branch string) (content []byte, blobSHA string, err error) {
 	var dest struct {

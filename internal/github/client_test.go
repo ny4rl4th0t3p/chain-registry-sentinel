@@ -98,6 +98,57 @@ func TestHasOpenPR_false(t *testing.T) {
 	}
 }
 
+func TestFindOpenPR_found(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total_count": 1,
+			"items":       []map[string]int{{"number": 37}},
+		})
+	})
+	num, found, err := client.FindOpenPR(context.Background(), "owner", "repo", "[sentinel] remove dead endpoints: umee")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !found || num != 37 {
+		t.Errorf("want (37, true), got (%d, %v)", num, found)
+	}
+}
+
+func TestFindOpenPR_notFound(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"total_count": 0, "items": []map[string]int{}})
+	})
+	num, found, err := client.FindOpenPR(context.Background(), "owner", "repo", "[sentinel] remove dead endpoints: umee")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found || num != 0 {
+		t.Errorf("want (0, false), got (%d, %v)", num, found)
+	}
+}
+
+func TestAddComment_ok(t *testing.T) {
+	var gotPath, gotBody string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		gotBody = payload["body"]
+		writeJSON(w, http.StatusCreated, map[string]int{"id": 1})
+	})
+	if err := client.AddComment(context.Background(), "owner", "repo", 37, "superseded by #41"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/repos/owner/repo/issues/37/comments" {
+		t.Errorf("wrong path: %s", gotPath)
+	}
+	if gotBody != "superseded by #41" {
+		t.Errorf("wrong body: %s", gotBody)
+	}
+}
+
 func TestEnsureLabel_creates(t *testing.T) {
 	postCalled := false
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

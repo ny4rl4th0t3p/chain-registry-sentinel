@@ -204,8 +204,12 @@ A chain counts as dead-looking in a run when either signature holds:
 Only after `chain-death-min-runs` consecutive dead-looking runs does the sentinel open a PR flipping the status, with
 all the evidence in the body: the streak duration, per-check failure summary, the operators that withdrew (with their
 live counts elsewhere), the newest observed block time, and a one-line way to verify. At most `max-status-prs` open per
-run (default 3); a chain flagged for a status PR is excluded from endpoint-removal and hash-fix PRs that run — no point
-grooming a chain that is about to be marked killed.
+run (default 3). A chain that looks dead — from the very first run of its streak, not just once it matures — is
+excluded from endpoint-removal and hash-fix PRs: no point grooming a chain that may be about to be marked killed, and
+an endpoint PR there would remove every core endpoint anyway. If a fix PR was already open before the chain started
+dying (the common gradual-decay path), the sentinel comments on it when the status-flip PR opens, noting it is
+superseded and can be closed once the status PR merges. It only ever comments — the sentinel never closes PRs, so it
+cannot collide with a maintainer's own process.
 
 Two safety rules: streaks freeze entirely on runs whose failures look vantage-caused (a broken resolver would otherwise
 make every chain look dead at once), and a chain's streak only moves on runs where its core checks actually executed. As
