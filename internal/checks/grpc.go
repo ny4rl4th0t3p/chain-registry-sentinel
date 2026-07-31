@@ -64,7 +64,7 @@ const (
 )
 
 // ProbeGRPCEndpoint checks a Cosmos SDK gRPC endpoint, trying each transport mode
-// parseGRPCTarget allows, in order. Both correction mechanisms here were found by manually
+// ParseGRPCTarget allows, in order. Both correction mechanisms here were found by manually
 // grpcurl-ing endpoints the probe had counted dead (see .claude/manual-verification.md):
 // TLS on nonstandard ports is real, and at least one gateway blocklists our canary method.
 //
@@ -76,7 +76,7 @@ func ProbeGRPCEndpoint(ctx context.Context, chain registry.Chain, ep registry.En
 	start := time.Now()
 	defer func() { probe.Latency = time.Since(start) }()
 
-	target, modes, err := parseGRPCTarget(ep.Address)
+	target, modes, err := ParseGRPCTarget(ep.Address)
 	if err != nil {
 		probe.FetchErr = err
 		return probe
@@ -178,8 +178,10 @@ func grpcAppLevelRefusal(err error) bool {
 		!strings.Contains(msg, `content-type "text/html"`)
 }
 
-// parseGRPCTarget returns a host:port dial target and the transport modes to attempt, in
-// order. Address forms found in chain.json:
+// ParseGRPCTarget returns a host:port dial target and the transport modes to attempt, in
+// order. Exported because the PR-body verification commands must mirror exactly how the probe
+// dialed — a grpcurl line derived from any other rule can contradict the finding it is meant
+// to let a maintainer reproduce. Address forms found in chain.json:
 //
 //	https://grpc.cosmos.network:443 → TLS only (operator stated the scheme)
 //	http://grpc.cosmos.network:9090 → plaintext only (operator stated the scheme)
@@ -193,7 +195,7 @@ func grpcAppLevelRefusal(err error) bool {
 // that never comes), which counted at least one live endpoint dead. TLS is attempted first
 // because the failure costs are asymmetric: TLS at a plaintext server fails in one round trip,
 // plaintext at a TLS server burns the whole timeout.
-func parseGRPCTarget(address string) (target string, modes []bool, err error) {
+func ParseGRPCTarget(address string) (target string, modes []bool, err error) {
 	tlsOnly, plainOnly, tlsFirst := []bool{true}, []bool{false}, []bool{true, false}
 
 	if strings.Contains(address, "://") {

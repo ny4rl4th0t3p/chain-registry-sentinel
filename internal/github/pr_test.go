@@ -234,6 +234,35 @@ func TestBuildPRBody(t *testing.T) {
 	}
 }
 
+// The verification commands must mirror how the probe dialed (checks.ParseGRPCTarget), or a
+// maintainer's copy-paste fails for its own reasons and falsely "confirms" a dead endpoint:
+// schemes stripped, bare hosts get the :443 the probe dials, and the TLS mode matches.
+func TestBuildPRBody_GRPCVerifyCommandsMirrorProbe(t *testing.T) {
+	chain := registry.Chain{Name: "testchain", ChainID: "test-1"}
+	body := github.BuildPRBody(chain, []github.FlaggedEndpoint{
+		dead("grpc_liveness", "https://grpc.tls.example:443"),
+		dead("grpc_liveness", "http://grpc.plain.example:9090"),
+		dead("grpc_liveness", "grpc.bare.example"),
+		dead("grpc_liveness", "grpc.nonstd.example:9220"),
+	})
+	for _, want := range []string{
+		"grpcurl grpc.tls.example:443 cosmos.base",           // scheme stripped, TLS stated by operator
+		"grpcurl -plaintext grpc.plain.example:9090 cosmos.", // scheme stripped, plaintext stated
+		"grpcurl grpc.bare.example:443 cosmos.",              // bare host gets the :443 the probe dials
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, "grpcurl grpc.nonstd.example:9220 cosmos") ||
+		!strings.Contains(body, "retry with -plaintext") {
+		t.Error("nonstandard port must show the TLS-first command with the plaintext retry note")
+	}
+	if strings.Contains(body, "grpcurl https://") || strings.Contains(body, "grpcurl -plaintext http") {
+		t.Error("a scheme must never reach a grpcurl command")
+	}
+}
+
 func writeAssetListJSON(t *testing.T, dir, chainName string, assets []any) {
 	t.Helper()
 	chainDir := filepath.Join(dir, chainName)

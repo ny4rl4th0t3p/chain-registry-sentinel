@@ -13,6 +13,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
+	"chain-registry-sentinel/internal/checks"
 	"chain-registry-sentinel/internal/registry"
 )
 
@@ -94,7 +95,7 @@ func EditChainJSON(registryPath, chainName string, dead []FlaggedEndpoint) ([]by
 func BuildPRBody(chain registry.Chain, dead []FlaggedEndpoint) string {
 	var sb strings.Builder
 	sb.WriteString("## Dead endpoints\n\n")
-	sb.WriteString("| Check | Address | First failed | Consecutive failures | First evidence | Latest evidence |\n")
+	sb.WriteString("| Check | Address | First seen failing | Consecutive failures | First evidence | Latest evidence |\n")
 	sb.WriteString("|-------|---------|-------------|---------------------|----------------|------------------|\n")
 	for _, ep := range dead {
 		firstFailed := ep.FirstFailureTime.UTC().Format("2006-01-02")
@@ -123,13 +124,11 @@ func verifyCmd(ep FlaggedEndpoint) string {
 	case "rest_liveness":
 		return fmt.Sprintf("curl -s '%s/cosmos/base/tendermint/v1beta1/node_info' | jq .default_node_info.network", ep.Address)
 	case "grpc_web_liveness":
-		return fmt.Sprintf("curl -s -H 'Content-Type: application/grpc-web+proto' '%s'", ep.Address)
+		return fmt.Sprintf("printf '\\x00\\x00\\x00\\x00\\x00' | curl -s -X POST"+
+			" -H 'Content-Type: application/grpc-web+proto' -H 'X-Grpc-Web: 1' --data-binary @-"+
+			" '%s/cosmos.base.tendermint.v1beta1.Service/GetNodeInfo' | strings | head", ep.Address)
 	case "grpc_liveness":
-		flag := "-plaintext"
-		if strings.HasSuffix(ep.Address, ":443") || !strings.Contains(ep.Address, ":") {
-			flag = ""
-		}
-		return fmt.Sprintf("grpcurl %s %s cosmos.base.tendermint.v1beta1.Service/GetNodeInfo", flag, ep.Address)
+		return grpcVerifyCmd(ep.Address)
 	case "evm_liveness":
 		return fmt.Sprintf(
 			"curl -s -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"params\":[],\"id\":1}' '%s'",
@@ -138,6 +137,33 @@ func verifyCmd(ep FlaggedEndpoint) string {
 		return fmt.Sprintf("websocat '%s'", ep.Address)
 	default:
 		return fmt.Sprintf("curl -s '%s'", ep.Address)
+	}
+}
+
+// grpcVerifyMethod is grpcurl's method form: no leading slash, unlike the wire path the probe
+// invokes.
+const grpcVerifyMethod = "cosmos.base.tendermint.v1beta1.Service/GetNodeInfo"
+
+// grpcVerifyCmd derives the grpcurl line from the same target-resolution rules the probe
+// dialed with (checks.ParseGRPCTarget) — scheme stripped, default port applied, and the TLS
+// mode the probe actually attempted. A command derived from any other rule can fail for its
+// own reasons and falsely "confirm" a dead endpoint.
+func grpcVerifyCmd(address string) string {
+	target, modes, err := checks.ParseGRPCTarget(address)
+	if err != nil {
+		// Malformed in the registry; grpcurl cannot dial it either — show it as recorded.
+		return fmt.Sprintf("grpcurl %s %s", address, grpcVerifyMethod)
+	}
+	switch {
+	case len(modes) == 2:
+		// Nonstandard port: the probe tries TLS first, then plaintext. One line cannot do
+		// both, so mirror the order and say so.
+		return fmt.Sprintf("grpcurl %s %s   # TLS first, as probed; if the dial fails, retry with -plaintext",
+			target, grpcVerifyMethod)
+	case modes[0]:
+		return fmt.Sprintf("grpcurl %s %s", target, grpcVerifyMethod)
+	default:
+		return fmt.Sprintf("grpcurl -plaintext %s %s", target, grpcVerifyMethod)
 	}
 }
 
