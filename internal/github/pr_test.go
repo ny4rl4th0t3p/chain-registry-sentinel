@@ -75,6 +75,36 @@ func TestEditChainJSON_removeOneRPC(t *testing.T) {
 	}
 }
 
+// EVM entries live under apis."evm-http-jsonrpc"; the editor walks all categories by address,
+// and since v0.8.1 probes those entries on cosmos chains, so dead ones reach the removal flow.
+func TestEditChainJSON_removeEVMEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	writeChainJSON(t, dir, map[string]any{
+		"evm-http-jsonrpc": []any{
+			map[string]any{"address": "https://dead-evm.example.com", "provider": "bad"},
+			map[string]any{"address": "https://live-evm.example.com", "provider": "good"},
+		},
+	})
+	out, err := github.EditChainJSON(dir, "testchain", []github.FlaggedEndpoint{
+		dead("evm_liveness", "https://dead-evm.example.com"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil {
+		t.Fatal("want non-nil output (something was removed)")
+	}
+	if strings.Contains(string(out), "dead-evm.example.com") {
+		t.Error("dead EVM endpoint should be removed")
+	}
+	if !strings.Contains(string(out), "live-evm.example.com") {
+		t.Error("live EVM endpoint should be preserved")
+	}
+	if !strings.Contains(string(out), "evm-http-jsonrpc") {
+		t.Error("the category key must survive the edit")
+	}
+}
+
 func TestEditChainJSON_lastEndpointInCategory(t *testing.T) {
 	dir := t.TempDir()
 	writeChainJSON(t, dir, map[string]any{

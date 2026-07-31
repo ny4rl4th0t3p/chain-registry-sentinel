@@ -245,3 +245,27 @@ func TestChainDeathDetectsHaltedChain(t *testing.T) {
 		t.Fatalf("one fresh node must clear the halted signature, got %v", candidates)
 	}
 }
+
+// The v0.8.1 regression pair: evm_liveness is a core check, so a chain whose Cosmos-side
+// endpoints all died but whose EVM side still answers is NOT abandoned — one live core
+// endpoint blocks the signature. The same chain with the EVM side dead too is a candidate.
+// Before EVM endpoints were probed on cosmos chains, the live-EVM case was invisible and the
+// chain could be proposed as killed while it demonstrably served.
+func TestChainDeathEVMEndpointDefendsChain(t *testing.T) {
+	alive := append(deadChainResults(),
+		livenessResult("deadchain", "evm_liveness", "https://evm.opd.example", true, checks.ClassNone))
+	stateMap := stateFor("deadchain", "alivechain")
+	if candidates, _, _, _ := runChainDeathDetection(alive, stateMap, 1, testStale, deathNow); len(candidates) != 0 {
+		t.Fatalf("live EVM endpoint must block abandonment, got %v", candidates)
+	}
+	if cs := stateMap["deadchain"]; cs.ChainDeadStreak != 0 {
+		t.Errorf("streak must not advance while the EVM side answers, got %d", cs.ChainDeadStreak)
+	}
+
+	dead := append(deadChainResults(),
+		livenessResult("deadchain", "evm_liveness", "https://evm.opd.example", false, checks.ClassConnRefused))
+	stateMap = stateFor("deadchain", "alivechain")
+	if candidates, _, _, _ := runChainDeathDetection(dead, stateMap, 1, testStale, deathNow); len(candidates) != 1 || candidates[0] != "deadchain" {
+		t.Fatalf("dead EVM side must restore the candidacy, got %v", candidates)
+	}
+}

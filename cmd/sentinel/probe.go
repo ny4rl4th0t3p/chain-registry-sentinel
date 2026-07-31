@@ -99,6 +99,11 @@ func buildJobs(chains []registry.Chain) []job {
 			add(ch, ch.GRPCWebEndpoints, TypeGRPCWeb)
 			add(ch, ch.GRPCEndpoints, TypeGRPC)
 			add(ch, ch.WSSEndpoints, TypeWSS)
+			// Cosmos chains declare EVM JSON-RPC lists too (evmos-style chains, 46 of them at
+			// last count). Probing them matters beyond coverage: evm_liveness is a core check in
+			// chain-death detection, so a chain surviving only through its EVM side must be seen
+			// or the abandoned signature can fire on a serving chain.
+			add(ch, ch.EVMEndpoints, TypeEVM)
 		case "eip155":
 			add(ch, ch.EVMEndpoints, TypeEVM)
 		}
