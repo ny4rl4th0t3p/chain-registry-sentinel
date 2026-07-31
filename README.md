@@ -1,26 +1,63 @@
 # chain-registry-sentinel
 
 `cosmos/chain-registry` is the source of truth for RPC endpoints, IBC channels, asset metadata, and chain configuration
-across the Cosmos ecosystem. It is community-maintained and slowly decays — RPCs go offline, channels close... Nobody is
-continuously checking whether what's listed actually works.
+across the Cosmos ecosystem. Its own README already states the policy: *"Endpoints that consistently fail to respond
+successfully may be removed without warning."* But applying that policy by hand is not a human-scale job: it means
+re-checking thousands of endpoints across hundreds of chains, continuously, for changes nobody announces. CI can
+validate what arrives in a PR; no one can keep re-validating everything already merged. So entries outlive the
+infrastructure behind them quietly — probed from a GitHub-hosted runner on 2026-07-31 against registry commit
+`1e92f162` (2026-05-15), 69.1% of probed endpoints failed their liveness check, and on 49.3% of chains with RPC
+entries that included the **first-listed** RPC, the entry many clients default to. A home-network run against the same
+registry state agrees within 0.3 points, so the numbers are not a vantage artifact.
 
-This project does that check automatically. It reads the registry, queries each chain directly, and reports what no
-longer matches reality. When the evidence is strong enough — consistent failures over days, not a one-off blip — it
-proposes a correction through a pull request, with the evidence attached and a clear way for maintainers to reject it.
+The sentinel makes the registry's existing policy self-executing, packaged as a GitHub Action. It probes every declared
+endpoint, tracks failures across runs, and — when the evidence is consistent failure over days, not a one-off blip —
+proposes the removal the policy already authorizes, as a pull request with the evidence attached and a clear way for
+maintainers to reject it.
 
 The goal is not to replace human judgment. Every proposed change goes through a normal PR that a maintainer approves or
 closes. The sentinel just does the tedious part: watching endpoints, counting failures, and writing up findings.
 
 ## What it checks
 
-- **Endpoint liveness** — probes every declared RPC, REST, gRPC, gRPC-web, EVM JSON-RPC, and WSS endpoint. Failures are
-  tracked across runs; an endpoint is only flagged after `min-failures` consecutive failing runs, and re-probed once
-  more before a removal PR is opened.
-- **Chain ID** — RPC endpoints that respond with a different chain ID than the registry declares are reported.
+- **Endpoint liveness** — probes every declared RPC, REST, gRPC, gRPC-web, WSS, and EVM JSON-RPC endpoint on Cosmos
+  chains (`eip155` chains get their EVM JSON-RPC endpoints). Failures are tracked across runs; an endpoint is only
+  flagged after `min-failures` consecutive failing runs, and re-probed once more before a removal PR is opened.
+- **Chain liveness** — sometimes the dead thing is the chain, not its endpoints. When a chain looks dead for
+  `chain-death-min-runs` consecutive runs (either of two signatures, abandoned or halted — see
+  [Dead-chain detection](#dead-chain-detection)), the sentinel proposes a one-line status flip (`live` → `killed`)
+  instead of gutting the endpoint arrays: a single edit that marks the chain dead in the data every downstream
+  consumer reads.
+- **Chain ID** — endpoints that answer with a different chain ID than the registry declares are reported. Measured at
+  1.3% of live endpoints — most of them serving *a different chain entirely* through a recycled gateway hostname; the
+  automated remedy is on the [roadmap](#roadmap).
 - **IBC denom hash integrity** — recomputes each IBC asset's `ibc/<HASH>` denom from its declared trace path and opens a
   fix PR on any mismatch. Deterministic and local — no failure streak needed.
 
-Checks that only detect (and can't safely auto-fix) are on the [roadmap](#roadmap).
+**See it in action** on a live registry fork: an
+[endpoint-removal PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/37) with the per-endpoint evidence table, and
+the [status-flip PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/44) that superseded it when the whole chain
+turned out to be dead — evidence table, withdrawn-operator differential, copy-paste verification commands, and the
+automated cross-link notice between the two. Everything in those PR bodies was machine-gathered.
+
+## The verifiability rule
+
+One policy position underlies every liveness verdict, and it is deliberate:
+
+> **An endpoint earns "live" by answering its protocol's standard public query without credentials. One that cannot
+> be verified without credentials is treated as dead — regardless of what may still work behind payment plans or
+> allowlists.**
+
+The registry is a public claim, and a claim only a paying customer can verify is not one the registry's consumers can
+rely on. The sentinel does go out of its way to let restricted endpoints demonstrate themselves: when a gRPC endpoint
+refuses its standard node-info method by name (`method_restricted`, observed on a major multi-chain provider's
+gateways), it retries with a harmless parameterless query, and an answer counts as live. But when no credential-free
+request gets an answer, "it partially works" is not a liveness defence — it is the documented policy working as
+intended. The disagreement mechanism is the same as everywhere else: close the PR.
+
+One honest boundary: liveness verifies that the endpoint answers its protocol correctly, not that it answers *for the
+declared chain* — that is the separate chain ID check, currently report-only (see the roadmap). The exact request each
+probe sends and what counts as a pass are specified in [PROBES.md](PROBES.md).
 
 ---
 
@@ -50,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.1
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.1
         with:
           registry: .
           state-branch: sentinel-state
@@ -67,7 +104,7 @@ restore before probing, push after. State is kept on a dedicated branch isolated
 protection rules — the same pattern `gh-pages` uses. It has a full git history and never expires.
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.1
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.1
         with:
           registry: .
           state-branch: sentinel-state
@@ -85,7 +122,7 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
           key: sentinel-state-${{ github.run_id }}
           restore-keys: sentinel-state-
 
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.1
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.1
         with:
           registry: .
           state-path: .sentinel-state
@@ -98,7 +135,7 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
 |---------------------------|----------|--------------------------------------------------------------------------------------------------|
 | `registry`                | `.`      | Path to a local chain-registry clone, relative to the workspace.                                 |
 | `chains`                  | `all`    | Comma-separated chain names to check, or `all`.                                                  |
-| `timeout`                 | `60s`    | Per-request probe timeout (Go duration syntax: `30s`, `1m`).                                     |
+| `timeout`                 | `60s`    | Per-endpoint probe timeout (Go duration syntax: `30s`, `1m`).                                    |
 | `concurrency`             | `16`     | Maximum simultaneous endpoint probes. See the DNS note below before raising it.                  |
 | `state-path`              | _(none)_ | Directory for per-chain state files. Use when managing persistence externally.                   |
 | `reset-state`             | `false`  | Start unreadable state files from scratch instead of failing the step.                           |
@@ -157,9 +194,10 @@ chains beyond a cap wait for a later run. They do **not** bound the total number
 pools are independent — a run at the endpoint cap can still open hash-fix and status-flip PRs. Setting a cap to `0`
 turns that PR flow off entirely, which is how a scheduled workflow is scoped to a single PR type.
 
-**`pr-cooldown-days`** — measured from when the last sentinel PR for that chain was opened, and tracked separately for
-endpoint-removal and hash-fix PRs. In practice this governs how soon a *closed* (rejected) PR may be re-proposed — an
-open PR already blocks duplicates on its own (see PR behaviour below).
+**`pr-cooldown-days`** — measured from when the last sentinel PR for that chain was opened, and tracked in three
+separate per-chain buckets: endpoint-removal, hash-fix, and status-flip PRs each keep their own timestamp. In practice
+this governs how soon a *closed* (rejected) PR may be re-proposed — an open PR already blocks duplicates on its own
+(see PR behaviour below).
 
 ### Step outcome
 
@@ -179,15 +217,16 @@ Nothing is absorbed or rewritten in between — the step outcome is exactly the 
   open for a chain, it skips that chain.
 - Before opening a PR, the sentinel re-probes all flagged endpoints. If any have recovered, their failure streak is
   reset, and they are excluded from the PR. If all recover, no PR is opened.
-- Branch names follow the pattern `sentinel/{chain}-{N}` where N increments each time. Branches are never deleted by the
-  sentinel.
+- Branch names follow the pattern `sentinel/{chain}-{N}` for endpoint removals, `sentinel/{chain}-hash-{N}` for hash
+  fixes, and `sentinel/{chain}-status-{N}` for status flips, where N increments each time. Branches are never deleted
+  by the sentinel.
 - PRs are labelled `sentinel` and `automated` (both created automatically if missing).
 
 ### Dead-chain detection
 
 Sometimes the dead thing is the chain, not its endpoints — and then the right fix is flipping the chain's `status` from
-`live` to `killed` in `chain.json` (one line, schema-supported, corrects every downstream consumer at once) rather than
-deleting dozens of endpoints one by one.
+`live` to `killed` in `chain.json` (one line, schema-supported, visible to every downstream consumer at once) rather
+than deleting dozens of endpoints one by one.
 
 A chain counts as dead-looking in a run when either signature holds:
 
@@ -205,11 +244,21 @@ Only after `chain-death-min-runs` consecutive dead-looking runs does the sentine
 all the evidence in the body: the streak duration, per-check failure summary, the operators that withdrew (with their
 live counts elsewhere), the newest observed block time, and a one-line way to verify. At most `max-status-prs` open per
 run (default 3). A chain that looks dead — from the very first run of its streak, not just once it matures — is
-excluded from endpoint-removal and hash-fix PRs: no point grooming a chain that may be about to be marked killed, and
-an endpoint PR there would remove every core endpoint anyway. If a fix PR was already open before the chain started
+excluded from endpoint-removal and hash-fix PRs: no point grooming a chain that may be about to be marked killed — and
+for an abandoned chain, an endpoint PR would remove every core endpoint anyway. If a fix PR was already open before the chain started
 dying (the common gradual-decay path), the sentinel comments on it when the status-flip PR opens, noting it is
 superseded and can be closed once the status PR merges. It only ever comments — the sentinel never closes PRs, so it
 cannot collide with a maintainer's own process.
+
+What merging or closing does:
+
+- **Merging** closes the loop: chains whose `status` is not `live` are skipped entirely, so probing — and any further
+  PRs — stop with the merge.
+- **Closing** works exactly as the PR body states: the death streak resets on any run where the chain looks alive again
+  (a live core endpoint, or a fresh block time), and a fresh PR then needs the full streak from zero. While the chain
+  *still* looks dead, a closed PR is re-proposed only after `pr-cooldown-days` — status-flip PRs keep their own
+  per-chain cooldown bucket, separate from endpoint and hash PRs, all governed by the same input.
+- Status-flip PRs draw from their own `max-status-prs` pool and never count against `max-endpoint-prs`.
 
 Two safety rules: streaks freeze entirely on runs whose failures look vantage-caused (a broken resolver would otherwise
 make every chain look dead at once), and a chain's streak only moves on runs where its core checks actually executed. As
@@ -239,7 +288,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Checking a subset of chains
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.1
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.1
         with:
           registry: .
           chains: cosmoshub,osmosis,juno
@@ -250,7 +299,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Dry-run (no writes, no PRs)
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.5.1
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.1
         with:
           registry: .
           state-path: .sentinel-state
@@ -260,6 +309,28 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ---
 
 ## Running locally
+
+### Try it without installing anything
+
+The action's image is published to GHCR, and the binary inside it runs standalone — a registry clone and Docker are
+the only requirements. The image's default entrypoint is the Action wrapper (it expects a GitHub workspace), so point
+the entrypoint at the binary directly:
+
+```bash
+git clone --depth 1 https://github.com/cosmos/chain-registry
+
+# probe two chains, report to stdout, touch nothing — no state, no PRs, no writes
+docker run --rm --entrypoint /sentinel \
+  -v "$PWD/chain-registry:/registry:ro" \
+  ghcr.io/ny4rl4th0t3p/chain-registry-sentinel:v0.8.1 \
+  --registry /registry --chains cosmoshub,osmosis
+```
+
+The registry mounts read-only on purpose: without `--state-path` nothing is ever flagged and no PRs of any kind can
+open, so this is a pure measurement. To keep the run's records for later analysis, add a writable mount:
+`-v "$PWD/records:/records"` plus `--report /records --vantage local`.
+
+### Building from source
 
 ```bash
 # build
@@ -303,6 +374,35 @@ If the report opens with a **vantage health warning**, believe it: the failures 
 the probing machine (a failing resolver, a missing IPv6 route), and nothing in that run — including the structural
 counts — should be quoted. Fix the machine's DNS or routing, or lower `concurrency`, and re-run.
 
+### Failure classes and evidence weight
+
+Every failure is classified from the live error value (not string-matched after the fact), and the classes are not
+equal as evidence. Kill PRs aggregate their evidence by class and removal PRs quote each endpoint's raw evidence, so
+it matters what each class implies — strongest first:
+
+- **`not_served_by_provider`** — a *serving* provider answers with an explicit "unsupported platform" body for this
+  chain, distinct from its 404 for names it never heard of. This is an affirmative retirement statement by the
+  operator — the strongest single class, and immune to vantage effects: the provider is reachable and answering, it is
+  just saying no. Classification is deliberately narrow, extended only from messages actually observed in the wild.
+- **`dns_nxdomain`** — the name no longer resolves. Very strong, and block-immune: an operator can firewall probes at
+  the connection level, but NXDOMAIN is the DNS system's answer, not the operator's.
+- **`gateway_no_backend`** — a live gateway (502/503/504) with nothing behind it for this chain. The
+  infrastructure survives; the chain was silently dropped from it.
+- **`conn_refused` / `net_unreachable` / TLS classes** (`tls_expired`, `tls_hostname`, …) — nothing listens, or the
+  TLS layer contradicts the claim. Strong once sustained over a streak: certificates do not stay expired for weeks by
+  accident.
+- **Ambiguous classes** (`timeout`, `conn_reset`, `http_403`, `dns_failure`, `vantage_no_route`, …) — anything an
+  aggressive or badly-networked prober could have caused itself. The report counts these separately from the
+  structural set so quoted numbers never lean on them. Be precise about what they do drive, though: the failure
+  streak counts a failure as a failure regardless of class, so an endpoint that answers 403 to every probe for
+  `min-failures` consecutive runs is still proposed for removal — that is the verifiability rule, applied
+  deliberately. Two classes (`dns_failure`, `vantage_no_route`) indict the probing machine and feed the vantage health
+  warning; one (`http_429`) marks the probe as skipped, so a rate-limited endpoint accrues no streak at all and can
+  never be proposed for removal.
+
+Every record keeps the raw `evidence` string its class was derived from, so any verdict can be re-audited — or
+reclassified later — without re-probing.
+
 ### Records: keep a run, re-analyze it later
 
 ```bash
@@ -330,11 +430,48 @@ reclassification — is one `jq` away.
 
 ---
 
+## Known limitations
+
+**One vantage.** Every verdict is measured from a single network location — on GitHub-hosted runners, that means
+Azure's address space, and the runner's resolver IP is visible in the evidence strings. An endpoint that firewalls
+datacenter ASNs at the connection level while serving residential users will look dead from CI; that residual risk is
+real and cannot be fully closed from one vantage. What narrows it:
+
+- **Streaks, not snapshots** — a verdict needs `min-failures` consecutive runs, plus one more re-probe at PR time.
+- **NXDOMAIN is block-immune** — the heaviest dead class comes from DNS, which an endpoint-side firewall cannot fake.
+- **The withdrawn-operator differential compares within one run** — "this operator is alive on 108 chains and dead on
+  this one" holds regardless of where the probe stands, because both measurements share the vantage.
+- **Vantage health checks** — runs whose failures look self-inflicted freeze all chain-death streaks and print a
+  warning. Endpoint streaks are not frozen on such runs — they are protected by the other two layers instead: streak
+  length and the PR-time re-probe.
+
+And a parity note: the registry's own CI runs from the same GitHub-hosted vantage, so the sentinel's view is no
+narrower than the status quo's — it is the same view, applied continuously instead of only at PR time.
+
 ## Roadmap
 
-Two further IBC checks are under research. Both detect problems that have no unambiguous automated fix, so what a
-finding should trigger (a PR removing the entry, an issue, or a report) is an open policy question — input from registry
-maintainers is welcome before these are built.
+Next up:
+
+- **Wrong-chain-ID remedy** — the chain ID check currently only reports. Measured on real data: 1.3% of live endpoints
+  answer for a different chain — most through recycled multi-chain gateways (an endpoint listed for one chain serving
+  another's data), which pass every liveness check while being worse than dead. Planned: wrong-ID failures accrue
+  streaks into the existing removal flow, with a unanimity guard — when *every* live endpoint of a chain agrees on the
+  same ID that differs from the registry, the registry is what's wrong, and the fix is a one-line `chain_id`
+  correction, not removals. Wrong-ID endpoints also stop counting as live for dead-chain detection, so a phantom
+  gateway can no longer keep a dying chain looking alive.
+- **Malformed-entry lint** — entries that fail before any probe (e.g. a hostname with a trailing space, already
+  classified as `malformed_registry_address`). Deterministic and local like the hash check: no streak needed, a PR on
+  the first run.
+- **Second-vantage confirmation at PR time** — one confirming probe from a genuinely different network before a PR
+  opens, narrowing the ASN-firewall gap described under limitations. Honest caveat: a second GitHub-hosted runner is
+  *not* a second vantage (same Azure address space), so this means an external probe API with community probes on
+  non-datacenter networks, or an operator-supplied proxy — an added dependency, which is why it is a roadmap item and
+  not a design. Its scope is also narrow by nature: the dominant removal classes (`dns_nxdomain`,
+  `not_served_by_provider`) are already vantage-immune, so a second vantage would only ever arbitrate
+  connection-level failures.
+
+Two further IBC checks are under research. Both detect problems whose automated fix is an open policy question — input
+from registry maintainers is welcome before these are built:
 
 - **IBC channel state** — verify that channels declared in `_IBC/*.json` actually report `OPEN` on both chains, with
   failure streaks since closed channels can be reopened by a relayer.
