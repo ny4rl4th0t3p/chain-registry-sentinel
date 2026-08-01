@@ -60,7 +60,7 @@ runs:
   # Prebuilt image, tagged identically to the git tag consumers put after the @ in `uses:`.
   # publish-image.yml asserts this ref matches the tag being released, so a release cannot
   # silently ship pointing at the previous image. Bump alongside every tag.
-  image: 'docker://ghcr.io/ny4rl4th0t3p/chain-registry-sentinel:v0.8.2'
+  image: 'docker://ghcr.io/ny4rl4th0t3p/chain-registry-sentinel:v0.8.3'
   env:
     INPUT_REGISTRY: ${{ inputs.registry }}
     INPUT_CHAINS: ${{ inputs.chains }}

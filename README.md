@@ -94,7 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.2
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.3
         with:
           registry: .
           state-branch: sentinel-state
@@ -111,7 +111,7 @@ restore before probing, push after. State is kept on a dedicated branch isolated
 protection rules — the same pattern `gh-pages` uses. It has a full git history and never expires.
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.2
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.3
         with:
           registry: .
           state-branch: sentinel-state
@@ -129,7 +129,7 @@ point all accumulated streaks are lost. Only use this when you cannot write to t
           key: sentinel-state-${{ github.run_id }}
           restore-keys: sentinel-state-
 
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.2
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.3
         with:
           registry: .
           state-path: .sentinel-state
@@ -295,7 +295,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Checking a subset of chains
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.2
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.3
         with:
           registry: .
           chains: cosmoshub,osmosis,juno
@@ -306,7 +306,7 @@ threshold. A mismatch found on the first run opens a PR on the first run.
 ### Dry-run (no writes, no PRs)
 
 ```yaml
-      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.2
+      - uses: ny4rl4th0t3p/chain-registry-sentinel@v0.8.3
         with:
           registry: .
           state-path: .sentinel-state
@@ -329,7 +329,7 @@ git clone --depth 1 https://github.com/cosmos/chain-registry
 # probe two chains, report to stdout, touch nothing — no state, no PRs, no writes
 docker run --rm --entrypoint /sentinel \
   -v "$PWD/chain-registry:/registry:ro" \
-  ghcr.io/ny4rl4th0t3p/chain-registry-sentinel:v0.8.2 \
+  ghcr.io/ny4rl4th0t3p/chain-registry-sentinel:v0.8.3 \
   --registry /registry --chains cosmoshub,osmosis
 ```
 
