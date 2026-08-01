@@ -82,7 +82,11 @@ func collectFlagged(stateMap map[string]state.ChainState, threshold int) map[str
 	return result
 }
 
-// preflight re-probes only the flagged addresses and returns which passed per chain.
+// preflight re-probes only the flagged (check, address) pairs and returns which passed per
+// chain, keyed by state.EndpointKey. Pair-keyed on purpose: 28 registry addresses are
+// declared under multiple api categories (Pocket-style gateways serve RPC and REST on one
+// URL), and an address-keyed rescue would let an alive RPC forever shield its dead REST twin
+// from removal.
 func preflight(
 	allJobs []job,
 	client *http.Client,
@@ -91,19 +95,20 @@ func preflight(
 	ua string,
 	flagged map[string][]github.FlaggedEndpoint,
 ) map[string]map[string]bool {
-	flaggedAddrs := make(map[string]map[string]struct{})
+	flaggedKeys := make(map[string]map[string]struct{})
 	for chainName, endpoints := range flagged {
-		addrs := make(map[string]struct{}, len(endpoints))
+		keys := make(map[string]struct{}, len(endpoints))
 		for _, ep := range endpoints {
-			addrs[ep.Address] = struct{}{}
+			keys[state.EndpointKey(ep.Check, ep.Address)] = struct{}{}
 		}
-		flaggedAddrs[chainName] = addrs
+		flaggedKeys[chainName] = keys
 	}
 	var filtered []job
 	for i := range allJobs {
 		j := allJobs[i]
-		if addrs, ok := flaggedAddrs[j.chain.Name]; ok {
-			if _, inSet := addrs[j.endpoint.Address]; inSet {
+		if keys, ok := flaggedKeys[j.chain.Name]; ok {
+			jobKey := state.EndpointKey(j.endpointType.livenessCheckName(), j.endpoint.Address)
+			if _, inSet := keys[jobKey]; inSet {
 				filtered = append(filtered, j)
 			}
 		}
@@ -121,13 +126,15 @@ func preflight(
 			passed[r.Chain] = make(map[string]bool)
 		}
 		if r.Passed {
-			passed[r.Chain][r.Endpoint] = true
+			passed[r.Chain][state.EndpointKey(r.Check, r.Endpoint)] = true
 		}
 	}
 	return passed
 }
 
-// applyPreflightResults resets the failure streak for any endpoint that passed preflight.
+// applyPreflightResults resets the failure streak for any (check, address) pair that passed
+// preflight — the same pair the streak is keyed by, so a pass on one protocol cannot reset a
+// sibling protocol's streak on the same address.
 func applyPreflightResults(
 	stateMap map[string]state.ChainState,
 	flagged map[string][]github.FlaggedEndpoint,
@@ -141,7 +148,7 @@ func applyPreflightResults(
 		}
 		cs := stateMap[chainName]
 		for _, ep := range endpoints {
-			if !passedMap[ep.Address] {
+			if !passedMap[state.EndpointKey(ep.Check, ep.Address)] {
 				continue
 			}
 			key := state.EndpointKey(ep.Check, ep.Address)
@@ -228,7 +235,7 @@ func openPRs(
 		if pm := passed[ch.Name]; len(pm) > 0 {
 			stillDead = stillDead[:0]
 			for _, ep := range dead {
-				if !pm[ep.Address] {
+				if !pm[state.EndpointKey(ep.Check, ep.Address)] {
 					stillDead = append(stillDead, ep)
 				}
 			}

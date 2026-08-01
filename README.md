@@ -7,8 +7,11 @@ re-checking thousands of endpoints across hundreds of chains, continuously, for 
 validate what arrives in a PR; no one can keep re-validating everything already merged. So entries outlive the
 infrastructure behind them quietly — probed from a GitHub-hosted runner on 2026-07-31 against registry commit
 `1e92f162` (2026-05-15), 69.1% of probed endpoints failed their liveness check, and on 49.3% of chains with RPC
-entries that included the **first-listed** RPC, the entry many clients default to. A home-network run against the same
-registry state agrees within 0.3 points, so the numbers are not a vantage artifact.
+entries that included the **first-listed** RPC, the entry many clients default to. That 69.1% is three problems, not
+one: a quarter of the dead endpoints sit on 74 chains that are dead in their entirety (one status flip each), nearly
+half are exits of operators with nothing live anywhere (operator-wide removals) — and the remainder is the ordinary
+decay this tool grooms continuously: even on living chains from living operators, 38.9% of endpoints are dead. A
+home-network run against the same registry state agrees within 0.3 points, so the numbers are not a vantage artifact.
 
 The sentinel makes the registry's existing policy self-executing, packaged as a GitHub Action. It probes every declared
 endpoint, tracks failures across runs, and — when the evidence is consistent failure over days, not a one-off blip —
@@ -28,13 +31,17 @@ closes. The sentinel just does the tedious part: watching endpoints, counting fa
   [Dead-chain detection](#dead-chain-detection)), the sentinel proposes a one-line status flip (`live` → `killed`)
   instead of gutting the endpoint arrays: a single edit that marks the chain dead in the data every downstream
   consumer reads.
-- **Chain ID** — endpoints that answer with a different chain ID than the registry declares are reported. Measured at
-  1.3% of live endpoints — most of them serving *a different chain entirely* through a recycled gateway hostname; the
-  automated remedy is on the [roadmap](#roadmap).
+- **Chain ID** — endpoints that answer with a different chain ID than the registry declares are reported. A small,
+  shifting set — around 1% of live endpoints on any given run, and it fluctuates because gateways rotate what sits
+  behind a hostname — most of them serving *a different chain entirely*; the automated remedy is on the
+  [roadmap](#roadmap).
 - **IBC denom hash integrity** — recomputes each IBC asset's `ibc/<HASH>` denom from its declared trace path and opens a
   fix PR on any mismatch. Deterministic and local — no failure streak needed.
 
-**See it in action** on a live registry fork: an
+**See it in action**: the sentinel runs on a live chain-registry fork at
+[**ny4rl4th0t3p/chain-registry**](https://github.com/ny4rl4th0t3p/chain-registry) — scheduled runs, persistent state on
+a branch, and every kind of PR it opens, browsable under
+[open pull requests](https://github.com/ny4rl4th0t3p/chain-registry/pulls). Two exhibits: an
 [endpoint-removal PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/37) with the per-endpoint evidence table, and
 the [status-flip PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/44) that superseded it when the whole chain
 turned out to be dead — evidence table, withdrawn-operator differential, copy-paste verification commands, and the
@@ -452,9 +459,10 @@ narrower than the status quo's — it is the same view, applied continuously ins
 
 Next up:
 
-- **Wrong-chain-ID remedy** — the chain ID check currently only reports. Measured on real data: 1.3% of live endpoints
-  answer for a different chain — most through recycled multi-chain gateways (an endpoint listed for one chain serving
-  another's data), which pass every liveness check while being worse than dead. Planned: wrong-ID failures accrue
+- **Wrong-chain-ID remedy** — the chain ID check currently only reports. Measured on real data: around 1% of live
+  endpoints answer for a different chain, a set that shifts run to run — most through recycled multi-chain gateways
+  (an endpoint listed for one chain serving another's data), which pass every liveness check while being worse than
+  dead. Planned: wrong-ID failures accrue
   streaks into the existing removal flow, with a unanimity guard — when *every* live endpoint of a chain agrees on the
   same ID that differs from the registry, the registry is what's wrong, and the fix is a one-line `chain_id`
   correction, not removals. Wrong-ID endpoints also stop counting as live for dead-chain detection, so a phantom

@@ -44,8 +44,22 @@ type PRRequest struct {
 	RegistryPath string
 }
 
+// checkCategory maps a liveness check name to the apis key its entries live under. Removal
+// must be scoped to the (category, address) pair, never the bare address: 28 registry
+// addresses are declared under multiple categories (Pocket Network's gateways serve RPC and
+// REST on one URL), and address-keyed deletion would remove a live sibling along with the
+// dead entry.
+var checkCategory = map[string]string{
+	"rpc_liveness":      "rpc",
+	"rest_liveness":     "rest",
+	"grpc_liveness":     "grpc",
+	"grpc_web_liveness": "grpc-web",
+	"evm_liveness":      "evm-http-jsonrpc",
+	"wss_liveness":      "wss",
+}
+
 // EditChainJSON reads {registryPath}/{chainName}/chain.json, surgically removes
-// the dead addresses from all apis subarrays, and returns the modified bytes.
+// the dead (category, address) pairs from the apis subarrays, and returns the modified bytes.
 // Returns nil, nil when nothing was removed (no-op signal).
 // The file's original formatting and key order are preserved.
 func EditChainJSON(registryPath, chainName string, dead []FlaggedEndpoint) ([]byte, error) {
@@ -55,16 +69,22 @@ func EditChainJSON(registryPath, chainName string, dead []FlaggedEndpoint) ([]by
 		return nil, fmt.Errorf("EditChainJSON: %w", err)
 	}
 
-	deadAddrs := make(map[string]struct{}, len(dead))
+	deadPairs := make(map[string]struct{}, len(dead))
 	for _, ep := range dead {
-		deadAddrs[ep.Address] = struct{}{}
+		cat, known := checkCategory[ep.Check]
+		if !known {
+			// An unmapped check name must not fall back to any broader match: refusing to
+			// delete is recoverable, deleting the wrong entry is not.
+			continue
+		}
+		deadPairs[cat+"|"+ep.Address] = struct{}{}
 	}
 
 	// Collect indices to remove per api category.
 	toDelete := make(map[string][]int)
 	gjson.GetBytes(data, "apis").ForEach(func(category, endpoints gjson.Result) bool {
 		endpoints.ForEach(func(idx, ep gjson.Result) bool {
-			if _, isDead := deadAddrs[ep.Get("address").String()]; isDead {
+			if _, isDead := deadPairs[category.String()+"|"+ep.Get("address").String()]; isDead {
 				cat := category.String()
 				toDelete[cat] = append(toDelete[cat], int(idx.Int()))
 			}

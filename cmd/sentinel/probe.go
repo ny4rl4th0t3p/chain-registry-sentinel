@@ -85,27 +85,38 @@ type job struct {
 
 func buildJobs(chains []registry.Chain) []job {
 	var jobs []job
-	add := func(ch registry.Chain, eps []registry.Endpoint, t EndpointType) {
-		for i, ep := range eps {
-			jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: t, order: i + 1})
-		}
-	}
 	for i := range chains {
 		ch := chains[i]
+		// The registry contains literal duplicate entries — the same address twice in one
+		// list (10 across the registry when measured, 2026-08-01). One job per occurrence
+		// would double-count the streak: state keys on (check, address), so a duplicated
+		// endpoint matures at min-failures/2 runs, which is how a premature PR shipped once.
+		// First occurrence wins and keeps its true list position for `order`.
+		seen := map[string]struct{}{}
+		add := func(eps []registry.Endpoint, t EndpointType) {
+			for i, ep := range eps {
+				key := t.String() + "|" + ep.Address
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				jobs = append(jobs, job{chain: ch, endpoint: ep, endpointType: t, order: i + 1})
+			}
+		}
 		switch ch.ChainType {
 		case "cosmos":
-			add(ch, ch.RPCs, TypeRPC)
-			add(ch, ch.RESTEndpoints, TypeREST)
-			add(ch, ch.GRPCWebEndpoints, TypeGRPCWeb)
-			add(ch, ch.GRPCEndpoints, TypeGRPC)
-			add(ch, ch.WSSEndpoints, TypeWSS)
+			add(ch.RPCs, TypeRPC)
+			add(ch.RESTEndpoints, TypeREST)
+			add(ch.GRPCWebEndpoints, TypeGRPCWeb)
+			add(ch.GRPCEndpoints, TypeGRPC)
+			add(ch.WSSEndpoints, TypeWSS)
 			// Cosmos chains declare EVM JSON-RPC lists too (evmos-style chains, 46 of them at
 			// last count). Probing them matters beyond coverage: evm_liveness is a core check in
 			// chain-death detection, so a chain surviving only through its EVM side must be seen
 			// or the abandoned signature can fire on a serving chain.
-			add(ch, ch.EVMEndpoints, TypeEVM)
+			add(ch.EVMEndpoints, TypeEVM)
 		case "eip155":
-			add(ch, ch.EVMEndpoints, TypeEVM)
+			add(ch.EVMEndpoints, TypeEVM)
 		}
 	}
 	return jobs

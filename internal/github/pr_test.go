@@ -75,8 +75,45 @@ func TestEditChainJSON_removeOneRPC(t *testing.T) {
 	}
 }
 
-// EVM entries live under apis."evm-http-jsonrpc"; the editor walks all categories by address,
-// and since v0.8.1 probes those entries on cosmos chains, so dead ones reach the removal flow.
+// A dead verdict on one protocol must not delete the same address's entry under another
+// category: 28 registry addresses are listed under both rpc and rest (Pocket-style gateways
+// serving both on one URL), and address-keyed deletion would remove the live sibling too.
+func TestEditChainJSON_categoryScoped(t *testing.T) {
+	dir := t.TempDir()
+	shared := "https://gateway.example.com"
+	writeChainJSON(t, dir, map[string]any{
+		"rpc":  []any{map[string]any{"address": shared, "provider": "gw"}},
+		"rest": []any{map[string]any{"address": shared, "provider": "gw"}},
+	})
+	out, err := github.EditChainJSON(dir, "testchain", []github.FlaggedEndpoint{
+		dead("rest_liveness", shared),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == nil {
+		t.Fatal("want non-nil output (the rest entry should be removed)")
+	}
+	var doc struct {
+		APIs struct {
+			RPC  []map[string]any `json:"rpc"`
+			REST []map[string]any `json:"rest"`
+		} `json:"apis"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(doc.APIs.RPC) != 1 || doc.APIs.RPC[0]["address"] != shared {
+		t.Errorf("rpc entry must survive a rest-only removal, got %v", doc.APIs.RPC)
+	}
+	if len(doc.APIs.REST) != 0 {
+		t.Errorf("rest entry should be removed, got %v", doc.APIs.REST)
+	}
+}
+
+// EVM entries live under apis."evm-http-jsonrpc"; the editor removes matching (category,
+// address) pairs, and since v0.8.1 probes those entries on cosmos chains, so dead ones reach
+// the removal flow.
 func TestEditChainJSON_removeEVMEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	writeChainJSON(t, dir, map[string]any{
