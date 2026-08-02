@@ -25,4 +25,5 @@ Thumbs.db
 
 # Forensics
 /run-*.log
+/audit.log
 /local-state

@@ -5,13 +5,15 @@ across the Cosmos ecosystem. Its own README already states the policy: *"Endpoin
 successfully may be removed without warning."* But applying that policy by hand is not a human-scale job: it means
 re-checking thousands of endpoints across hundreds of chains, continuously, for changes nobody announces. CI can
 validate what arrives in a PR; no one can keep re-validating everything already merged. So entries outlive the
-infrastructure behind them quietly — probed from a GitHub-hosted runner on 2026-07-31 against registry commit
-`1e92f162` (2026-05-15), 69.1% of probed endpoints failed their liveness check, and on 49.3% of chains with RPC
-entries that included the **first-listed** RPC, the entry many clients default to. That 69.1% is three problems, not
-one: a quarter of the dead endpoints sit on 74 chains that are dead in their entirety (one status flip each), nearly
+infrastructure behind them quietly — probed from a GitHub-hosted runner on 2026-08-01 against registry commit
+`e1c86c4`, 60.0% of declared endpoint entries failed their liveness check, and on 96 of the 213 chains with RPC
+entries (45.1%) that included the **first-listed** RPC, the entry many clients default to. That 60% is three problems,
+not one: a fifth of the dead entries sit on 59 chains that are dead in their entirety (one status flip each), nearly
 half are exits of operators with nothing live anywhere (operator-wide removals) — and the remainder is the ordinary
-decay this tool grooms continuously: even on living chains from living operators, 38.9% of endpoints are dead. A
-home-network run against the same registry state agrees within 0.3 points, so the numbers are not a vantage artifact.
+decay this tool grooms continuously: even on living chains from living operators, 32.4% of endpoints are dead. (An
+earlier measurement of the May 2026 registry state, taken from two vantages that agreed within 0.3 points, read
+69.1% — maintainer cleanup moved the number nine points in nine weeks.) Every figure here is
+[auditable from frozen artifacts](#auditing-the-published-numbers) with one script.
 
 The sentinel makes the registry's existing policy self-executing, packaged as a GitHub Action. It probes every declared
 endpoint, tracks failures across runs, and — when the evidence is consistent failure over days, not a one-off blip —
@@ -42,10 +44,14 @@ closes. The sentinel just does the tedious part: watching endpoints, counting fa
 [**ny4rl4th0t3p/chain-registry**](https://github.com/ny4rl4th0t3p/chain-registry) — scheduled runs, persistent state on
 a branch, and every kind of PR it opens, browsable under
 [open pull requests](https://github.com/ny4rl4th0t3p/chain-registry/pulls). Two exhibits: an
-[endpoint-removal PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/37) with the per-endpoint evidence table, and
-the [status-flip PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/44) that superseded it when the whole chain
-turned out to be dead — evidence table, withdrawn-operator differential, copy-paste verification commands, and the
-automated cross-link notice between the two. Everything in those PR bodies was machine-gathered.
+[endpoint-removal PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/70) whose per-endpoint evidence table spans
+three distinct failure stories (a certificate now answering for an unrelated domain, a live gateway with no backends,
+and an operator's own "unsupported platform" refusals), and a
+[status-flip PR](https://github.com/ny4rl4th0t3p/chain-registry/pull/72) marking a dead chain killed in one line —
+streak, per-check failure summary, the operators that withdrew with their live counts elsewhere, and copy-paste
+verification commands. Everything in those PR bodies was machine-gathered. (When a status-flip PR supersedes an open
+fix PR, the sentinel cross-links them with a comment instead of closing anything — see
+[Dead-chain detection](#dead-chain-detection).)
 
 ## The verifiability rule
 
@@ -434,6 +440,24 @@ rule happened to pick. A file containing more than one run (hand-concatenated) i
 mixing runs would double-count endpoints. Records are plain JSONL: every record carries both the machine-derived
 `failure_class` and the raw `evidence` it was derived from, so anything beyond the built-in report — and any future
 reclassification — is one `jq` away.
+
+### Auditing the published numbers
+
+Every figure quoted in this README's opening (and in the accompanying measurement report) is recomputed by
+[`scripts/report-audit.sh`](scripts/report-audit.sh) from three frozen artifacts attached to the
+[v0.8.3 release](https://github.com/ny4rl4th0t3p/chain-registry-sentinel/releases/tag/v0.8.3): the measurement dataset,
+the registry's own `test_endpoints` log it is corroborated against, and the May-2026-state dataset behind the
+historical comparison.
+
+```bash
+curl -LO https://github.com/ny4rl4th0t3p/chain-registry-sentinel/releases/download/v0.8.3/20260801T172659Z-github-runner.jsonl
+curl -LO https://github.com/ny4rl4th0t3p/chain-registry-sentinel/releases/download/v0.8.3/0_test-endpoints.txt
+curl -LO https://github.com/ny4rl4th0t3p/chain-registry-sentinel/releases/download/v0.8.3/20260731T080445Z-github-runner.jsonl
+sh scripts/report-audit.sh 20260801T172659Z-github-runner.jsonl 0_test-endpoints.txt 20260731T080445Z-github-runner.jsonl
+```
+
+Each value prints alongside the arithmetic that produced it. POSIX `sh` + `jq` + `awk`, nothing else. A mismatch
+between the script's output and any published claim is a bug in the claim — please report it.
 
 ---
 
