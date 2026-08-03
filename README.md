@@ -346,8 +346,8 @@ open, so this is a pure measurement. To keep the run's records for later analysi
 ### Building from source
 
 ```bash
-# build
-go build -o sentinel ./cmd/sentinel/
+# build (stamps the version from git describe; plain `go build -o sentinel ./cmd/sentinel/` works too)
+make build
 
 # probe cosmoshub and osmosis, track state, open PRs if min-failures is crossed
 ./sentinel \

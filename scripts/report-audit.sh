@@ -91,7 +91,7 @@ liveness "$RUN" | awk -F'\t' -v S="$STRUCTURAL" '
     printf "  %-30s %-40s %d / %d = %.1f%%\n", "first-listed RPC dead", "chains whose order-1 RPC failed / with RPC", length(d), length(t), length(d)/length(t)*100
     printf "  %-30s %-40s %s\n", "  of them structural", "failed with a structural class", length(st)}'
 
-sec "WITHDRAWAL-SIGNATURE QUEUE (zero-core-live, >=3 operators alive elsewhere)"
+sec "FULLY-DEAD CHAINS — status live, zero live core endpoints (* = withdrawal signature, >=3 witnesses)"
 liveness "$RUN" | awk -F'\t' '
   {rec[NR]=$0
    if($3~/^(rpc|rest|evm)_liveness$/){ct[$1]++; if($4=="true")cl[$1]++}
@@ -99,11 +99,24 @@ liveness "$RUN" | awk -F'\t' '
   END {
     for(c in ct) if(cl[c]==0) dead[c]=1
     for(i=1;i<=NR;i++){split(rec[i],f,"\t")
-      if((f[1] in dead) && f[4]=="false" && dl[f[2]]>0) w[f[1]"\t"f[2]]=1}
+      if(f[1] in dead){ep[f[1]]++
+        if(f[4]=="false" && dl[f[2]]>0) w[f[1]"\t"f[2]]=1}}
     for(k in w){split(k,f,"\t"); wc[f[1]]++}
-    for(c in wc) if(wc[c]>=3)
-      printf "%04d\t  %-30s %-40s %d witnesses\n", wc[c], c, "dead domains here, live elsewhere", wc[c]}' |
+    n=0
+    for(c in dead){n++
+      mark=(wc[c]>=3)?"*":" "
+      printf "%04d %s\t %s %-29s %-40s %d witnesses\n", wc[c]+0, c, mark, c, sprintf("%d endpoints, all types dead", ep[c]), wc[c]+0}
+    printf "-1 _\t   %-29s %-40s %d\n", "TOTAL", "must equal the decomposition fully-dead count", n}' |
   sort -rn | cut -f2-
+
+sec "TOP DEAD OPERATORS — 0%-live domains ranked by dead entries, with chain spread"
+liveness "$RUN" | awk -F'\t' '
+  {if($4=="true")dl[$2]++; if($4=="false"){dd[$2]++; ch[$2"\t"$1]=1}}
+  END {
+    for(k in ch){split(k,f,"\t"); cc[f[1]]++}
+    for(d in dd) if(!(d in dl))
+      printf "%06d\t  %-30s %-40s %d dead entries across %d chains\n", dd[d], d, "domain 0% live everywhere", dd[d], cc[d]}' |
+  sort -rn | cut -f2- | head -10
 
 sec "NODE QUALITY (live endpoints)"
 jq -r 'select((.check|endswith("_liveness")) and .passed==true)
@@ -151,6 +164,22 @@ row "  of them failing" "FAILED lines for the same 14" "$kf"
 grep -o '[0-9]* failed, [0-9]* passed' "$TLOG" | head -1 | awk -F'[ ,]' -v kt="$kt" -v kf="$kf" '
   {printf "  %-30s %-40s (%d-%d) / (%d-%d) = %d / %d = %.1f%%\n", "their net-of-killed rate",
      "excluding killed-chain tests", $1, kf, $1+$4, kt, $1-kf, ($1+$4)-kt, ($1-kf)/(($1+$4)-kt)*100}'
+
+sec "FAILURE COMPOSITION OF THE TEST_ENDPOINTS RUN (classified from its FAILED lines)"
+grep 'FAILED' "$TLOG" | awk '
+  {t++
+   if(/NameResolutionError|Name or service not known|No address associated/) dns++
+   else if(/SSLError|SSLCertVerification|certificate|handshake/) tls++
+   else if(/ReadTimeout|ConnectTimeout|timed out/) to++
+   else if(/AssertionError/) assert++
+   else other++}
+  END {
+    printf "  %-30s %-40s %d / %d = %.1f%%\n", "DNS resolution",     "NameResolutionError family", dns, t, dns/t*100
+    printf "  %-30s %-40s %d / %d = %.1f%%\n", "dead-server responses", "AssertionError: not reachable (non-200)", assert, t, assert/t*100
+    printf "  %-30s %-40s %d / %d = %.1f%%\n", "TLS",                "SSLError / certificate / handshake", tls, t, tls/t*100
+    printf "  %-30s %-40s %d / %d = %.1f%%\n", "2-second timeouts",  "Timeout family", to, t, to/t*100
+    printf "  %-30s %-40s %d / %d = %.1f%%\n", "other connection errors", "remaining (unnamed in the report)", other+0, t, (other+0)/t*100
+    printf "  %-30s %-40s %d (= %d+%d+%d+%d+%d)\n", "TOTAL", "buckets must sum to the failed count", t, dns, assert+0, tls, to, other+0}'
 
 sec "REPLICA — their criteria vs mine, on my records (RPC+REST only)"
 liveness "$RUN" | awk -F'\t' '$3~/^(rpc|rest)_liveness$/ {
